@@ -1,0 +1,9 @@
+# 忽略构建产物与运行时目录
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+/logs/
+/data/
+/coverage.out
