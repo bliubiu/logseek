@@ -46,6 +46,39 @@ func New(layout timefmt.Layout, start, end time.Time, p Policy) (*Filter, error)
 	}, nil
 }
 
+// RelativeWindow 解析相对时间窗口，如 last 30m / last 7d；end=now。
+func RelativeWindow(spec string, now time.Time) (start, end time.Time, err error) {
+	if spec == "" {
+		return time.Time{}, time.Time{}, fmt.Errorf("相对时间不能为空")
+	}
+	// 支持 last30m last7d last1h 等
+	if len(spec) < 2 {
+		return time.Time{}, time.Time{}, fmt.Errorf("相对时间格式非法：%s", spec)
+	}
+	unit := spec[len(spec)-1]
+	numStr := spec[:len(spec)-1]
+	var n int
+	if _, scanErr := fmt.Sscanf(numStr, "%d", &n); scanErr != nil || n <= 0 {
+		return time.Time{}, time.Time{}, fmt.Errorf("相对时间格式非法：%s", spec)
+	}
+	var d time.Duration
+	switch unit {
+	case 's', 'S':
+		d = time.Duration(n) * time.Second
+	case 'm', 'M':
+		d = time.Duration(n) * time.Minute
+	case 'h', 'H':
+		d = time.Duration(n) * time.Hour
+	case 'd', 'D':
+		d = time.Duration(n) * 24 * time.Hour
+	default:
+		return time.Time{}, time.Time{}, fmt.Errorf("相对时间单位非法：%c（支持 s/m/h/d）", unit)
+	}
+	end = now
+	start = now.Add(-d)
+	return start, end, nil
+}
+
 // Accept 判断一行是否落入窗口。
 func (f *Filter) Accept(line []byte) bool {
 	f.Scanned++

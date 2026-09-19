@@ -3,11 +3,13 @@ package stream
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"time"
 
+	"github.com/bliubiu/logseek/internal/infrastructure/ratelimit"
 	"github.com/bliubiu/logseek/internal/infrastructure/resources"
 )
 
@@ -33,7 +35,7 @@ type Summary struct {
 	Scanned  int64         `json:"scanned"`
 	Matched  int64         `json:"matched"`
 	BadLines int64         `json:"bad_lines,omitempty"`
-	Duration time.Duration `json:"duration"`
+	Duration time.Duration `json:"duration_ms"`
 	Source   string        `json:"source"`
 	Output   string        `json:"output,omitempty"`
 }
@@ -44,10 +46,26 @@ func (s Summary) Format() string {
 		s.Scanned, s.Matched, s.BadLines, s.Duration.Round(time.Millisecond))
 }
 
+// JSON 输出 JSON 字段友好结构。
+func (s Summary) JSON() map[string]any {
+	return map[string]any{
+		"scanned":     s.Scanned,
+		"matched":     s.Matched,
+		"bad_lines":   s.BadLines,
+		"duration_ms": s.Duration.Milliseconds(),
+		"source":      s.Source,
+		"output":      s.Output,
+	}
+}
+
 // Options 流式选项。
 type Options struct {
 	BlockSize int
 	MaxLine   int
+	// ReadRate 每秒字节上限，0 不限速
+	ReadRate int64
+	// Ctx 用于限速取消
+	Ctx context.Context
 }
 
 // DefaultOptions 默认资源档位。
@@ -67,6 +85,11 @@ func Run(srcPath string, sink Sink, filters []LineFilter, opt Options) (Summary,
 	if opt.MaxLine <= 0 {
 		opt.MaxLine = resources.MaxLineBytes
 	}
+	ctx := opt.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	lim := ratelimit.New(opt.ReadRate)
 	sum := Summary{Source: srcPath}
 
 	f, err := os.Open(srcPath) // 只读打开
@@ -78,8 +101,14 @@ func Run(srcPath string, sink Sink, filters []LineFilter, opt Options) (Summary,
 	}
 	defer f.Close()
 
+	// 限速读包装
+	var r io.Reader = f
+	if lim.Enabled() {
+		r = &rateReader{r: f, lim: lim, ctx: ctx}
+	}
+
 	// bufio 大缓冲顺序读，避免随机抖动。
-	br := bufio.NewReaderSize(f, opt.BlockSize)
+	br := bufio.NewReaderSize(r, opt.BlockSize)
 	sc := bufio.NewScanner(br)
 	sc.Buffer(make([]byte, 0, 64<<10), opt.MaxLine)
 
@@ -120,6 +149,23 @@ func Run(srcPath string, sink Sink, filters []LineFilter, opt Options) (Summary,
 		}
 	}
 	return sum, nil
+}
+
+// rateReader 按块限速读取。
+type rateReader struct {
+	r   io.Reader
+	lim *ratelimit.Limiter
+	ctx context.Context
+}
+
+func (rr *rateReader) Read(p []byte) (int, error) {
+	n, err := rr.r.Read(p)
+	if n > 0 {
+		if werr := rr.lim.Wait(rr.ctx, n); werr != nil {
+			return n, werr
+		}
+	}
+	return n, err
 }
 
 // 确保 io.EOF 引用不被误删（Scanner 内部处理 EOF）。

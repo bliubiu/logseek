@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bliubiu/logseek/internal/domain/stream"
 	"github.com/bliubiu/logseek/internal/infrastructure/sink"
@@ -107,6 +108,30 @@ func TestMissingSource(t *testing.T) {
 	_, err := stream.Run(filepath.Join(t.TempDir(), "no.log"), sink.NewDiscard(), nil, stream.DefaultOptions())
 	if err == nil || !strings.Contains(err.Error(), "不存在") {
 		t.Fatalf("期望不存在错误: %v", err)
+	}
+}
+
+func TestReadRate(t *testing.T) {
+	// 小文件 + 极低限速，应仍完成但变慢
+	var lines []string
+	for i := 0; i < 200; i++ {
+		lines = append(lines, strings.Repeat("y", 400)+itoa(i))
+	}
+	src := writeLog(t, lines)
+	sk := sink.NewDiscard()
+	opt := stream.DefaultOptions()
+	opt.ReadRate = 50 << 10 // 50KB/s
+	start := time.Now()
+	sum, err := stream.Run(src, sk, nil, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Scanned != 200 {
+		t.Fatalf("scanned=%d", sum.Scanned)
+	}
+	// 200*~405 ≈ 80KB at 50KB/s → 约 1.6s；至少应有可感知延迟
+	if time.Since(start) < 200*time.Millisecond {
+		t.Fatalf("限速似乎未生效: %s", time.Since(start))
 	}
 }
 

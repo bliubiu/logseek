@@ -55,3 +55,24 @@ func TestInvalidWindow(t *testing.T) {
 		t.Fatal("非法窗口应报错")
 	}
 }
+
+func TestRelativeWindow(t *testing.T) {
+	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.Local)
+	s, e, err := timeslice.RelativeWindow("30m", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !e.Equal(now) || s != now.Add(-30*time.Minute) {
+		t.Fatalf("%v %v", s, e)
+	}
+	s2, _, err := timeslice.RelativeWindow("7d", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2 != now.Add(-7*24*time.Hour) {
+		t.Fatal("7d 解析错误")
+	}
+	if _, _, err := timeslice.RelativeWindow("xx", now); err == nil {
+		t.Fatal("非法相对时间应报错")
+	}
+}

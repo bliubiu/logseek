@@ -2,6 +2,7 @@
 package application
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/bliubiu/logseek/internal/domain/timefmt"
 	"github.com/bliubiu/logseek/internal/domain/timeslice"
 	"github.com/bliubiu/logseek/internal/infrastructure/fileio"
+	"github.com/bliubiu/logseek/internal/infrastructure/logging"
+	"github.com/bliubiu/logseek/internal/infrastructure/mask"
 	"github.com/bliubiu/logseek/internal/infrastructure/resources"
 	"github.com/bliubiu/logseek/internal/infrastructure/sink"
 )
@@ -31,10 +34,12 @@ type ExportRequest struct {
 	Output string // 为空则不落盘（摘要模式）
 
 	// 时间窗口
-	EnableTime   bool
-	StartTime    time.Time
-	EndTime      time.Time
-	TimeFormat   string // 显式格式；空则探测
+	EnableTime bool
+	StartTime  time.Time
+	EndTime    time.Time
+	TimeFormat string // 显式格式；空则探测
+	Relative   string // 相对时间如 30m/7d/2h（与绝对互斥，优先）
+	Now        time.Time // 测试注入
 
 	// 内容条件
 	EnableSearch bool
@@ -43,6 +48,13 @@ type ExportRequest struct {
 	IgnoreCase   bool
 	WholeWord    bool
 	Pattern      string
+
+	// 资源
+	ReadRate   int64
+	EnableMask bool
+
+	// 日志
+	Logger *logging.Logger
 }
 
 // Export 执行导出并返回摘要。
@@ -54,15 +66,26 @@ func Export(req ExportRequest) (stream.Summary, error) {
 	var badCounter *int64
 
 	if req.EnableTime {
+		start, end := req.StartTime, req.EndTime
+		if req.Relative != "" {
+			now := req.Now
+			if now.IsZero() {
+				now = time.Now()
+			}
+			s, e, err := timeslice.RelativeWindow(req.Relative, now)
+			if err != nil {
+				return stream.Summary{}, err
+			}
+			start, end = s, e
+		}
 		layout, err := resolveLayout(req)
 		if err != nil {
 			return stream.Summary{}, err
 		}
-		flt, err := timeslice.New(layout, req.StartTime, req.EndTime, timeslice.DefaultPolicy())
+		flt, err := timeslice.New(layout, start, end, timeslice.DefaultPolicy())
 		if err != nil {
 			return stream.Summary{}, err
 		}
-		// 包装以累计坏行到摘要
 		filters = append(filters, stream.FilterFunc(func(line []byte) bool {
 			return flt.Accept(line)
 		}))
@@ -104,7 +127,10 @@ func Export(req ExportRequest) (stream.Summary, error) {
 		sk = fs
 	}
 
-	sum, err := stream.Run(req.Source, sk, filters, stream.DefaultOptions())
+	opt := stream.DefaultOptions()
+	opt.ReadRate = req.ReadRate
+
+	sum, err := stream.Run(req.Source, sk, filters, opt)
 	if badCounter != nil {
 		sum.BadLines = *badCounter
 	}
@@ -131,4 +157,20 @@ func resolveLayout(req ExportRequest) (timefmt.Layout, error) {
 // ApplyResources 启动资源基线。
 func ApplyResources() {
 	resources.ApplyMemoryLimit(0)
+}
+
+// FormatSummary 输出摘要；jsonMode 为 true 时输出 JSON。
+func FormatSummary(sum stream.Summary, jsonMode bool, enableMask bool) string {
+	if jsonMode {
+		b, err := json.Marshal(sum.JSON())
+		if err != nil {
+			return sum.Format()
+		}
+		return string(b)
+	}
+	s := sum.Format()
+	if enableMask {
+		s = mask.Apply(s)
+	}
+	return s
 }

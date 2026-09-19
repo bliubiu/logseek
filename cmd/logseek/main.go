@@ -2,14 +2,20 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/bliubiu/logseek/internal/application"
+	"github.com/bliubiu/logseek/internal/infrastructure/config"
+	"github.com/bliubiu/logseek/internal/infrastructure/crypto"
+	"github.com/bliubiu/logseek/internal/infrastructure/logging"
+	"github.com/bliubiu/logseek/internal/infrastructure/mask"
 )
 
 // 退出码定义（可被脚本消费）。
@@ -19,6 +25,7 @@ const (
 	exitUsage       = 2
 	exitNotFound    = 3
 	exitProbeFailed = 4
+	exitInterrupt   = 130
 )
 
 var (
@@ -36,32 +43,111 @@ var (
 	wholeWord  bool
 	pattern    string
 	output     string
+	// 全局
+	configPath string
+	jsonOut    bool
+	readRate   int64
+	logLevel   string
+	logDir     string
+	enableMask bool
+	keyFilePath string
+	// 运行时
+	appLogger *logging.Logger
+	appConfig *config.Config
 )
 
 func main() {
 	application.ApplyResources()
 
 	root := &cobra.Command{
-		Use:   "logseek",
-		Short: "大文件日志解析工具（只读源日志）",
-		Long:  "logSeek：面向运维的大文本日志命令行解析工具。全程只读源日志，只写输出结果文件。",
+		Use:     "logseek",
+		Short:   "大文件日志解析工具（只读源日志）",
+		Long:    "logSeek：面向运维的大文本日志命令行解析工具。全程只读源日志，只写输出结果文件。",
 		Version: version,
 	}
 
-	root.PersistentPreRun = func(cmd *cobra.Command, args []string) {
-		if memLimitMiB > 0 {
-			application.ApplyResources()
+	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		return initRuntime()
+	}
+	root.PersistentPostRun = func(cmd *cobra.Command, args []string) {
+		if appLogger != nil {
+			appLogger.Close()
 		}
 	}
 
-	root.PersistentFlags().IntVar(&memLimitMiB, "mem-limit-mib", 192, "Go 软内存上限（MiB），不得为 0 关闭")
+	pf := root.PersistentFlags()
+	pf.IntVar(&memLimitMiB, "mem-limit-mib", 192, "Go 软内存上限（MiB），不得为 0 关闭")
+	pf.StringVar(&configPath, "config", "", "配置文件路径（JSON）")
+	pf.StringVar(&keyFilePath, "key-file", "", "密钥文件路径（默认 .logseek/key）")
+	pf.BoolVar(&jsonOut, "json", false, "以 JSON 输出摘要/报告")
+	pf.Int64Var(&readRate, "read-rate", 0, "读限速（字节/秒），0 不限；生产建议 67108864（64MiB/s）")
+	pf.StringVar(&logLevel, "log-level", "", "日志级别 DEBUG/INFO/ERROR")
+	pf.StringVar(&logDir, "log-dir", "", "日志目录（默认 logs）")
+	pf.BoolVar(&enableMask, "mask", true, "控制台/摘要脱敏")
+	pf.StringVar(&sinceRel, "since", "", "相对时间窗口，如 30m/2h/7d（与 --start/--end 互斥）")
 
 	root.AddCommand(inspectCmd(), sliceCmd(), grepCmd(), exportCmd())
 
 	if err := root.Execute(); err != nil {
-		// cobra 已打印
-		os.Exit(exitUsage)
+		code := exitUsage
+		msg := err.Error()
+		switch {
+		case strings.Contains(msg, "文件不存在"):
+			code = exitNotFound
+		case strings.Contains(msg, "密钥"):
+			code = exitRuntime
+		case strings.Contains(msg, "配置"), strings.Contains(msg, "未能识别"), strings.Contains(msg, "无法按格式"):
+			code = exitProbeFailed
+		}
+		os.Exit(code)
 	}
+}
+
+func initRuntime() error {
+	var ks *crypto.KeyStore
+	keyPath := keyFilePath
+	var err error
+	if keyPath == "" {
+		keyPath = filepath.Join(".logseek", "key")
+	}
+	if configPath != "" || keyFilePath != "" || dirExists(".logseek") {
+		ks, err = crypto.NewKeyStore(keyPath)
+		if err != nil {
+			return fmt.Errorf("密钥初始化失败（禁止降级）：%w", err)
+		}
+	}
+
+	appConfig, err = config.Load(configPath, ks)
+	if err != nil {
+		return err
+	}
+	if logLevel != "" {
+		appConfig.LogLevel = logLevel
+	}
+	if logDir != "" {
+		appConfig.LogDir = logDir
+	}
+	if !enableMask {
+		appConfig.EnableMask = false
+	}
+
+	lg, err := logging.New(logging.Options{
+		Level:      appConfig.LogLevel,
+		Dir:        appConfig.LogDir,
+		Console:    false,
+		Module:     "logseek",
+		EnableMask: appConfig.EnableMask,
+	})
+	if err != nil {
+		return err
+	}
+	appLogger = lg
+	return nil
+}
+
+func dirExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.IsDir()
 }
 
 func inspectCmd() *cobra.Command {
@@ -72,10 +158,19 @@ func inspectCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rep, err := application.Inspect(args[0])
 			if err != nil {
+				logErr(err)
 				fmt.Fprintln(os.Stderr, "错误:", err)
-				os.Exit(mapExit(err, false))
+				os.Exit(mapExit(err))
 			}
-			fmt.Print(rep.Format())
+			if appLogger != nil {
+				appLogger.Infof("预检完成 文件=%s 编码=%s 可切片=%v", args[0], rep.Encoding, rep.Sliceable)
+			}
+			if jsonOut {
+				b, _ := json.MarshalIndent(rep, "", "  ")
+				fmt.Println(string(b))
+			} else {
+				fmt.Print(rep.Format())
+			}
 			return nil
 		},
 	}
@@ -87,33 +182,17 @@ func sliceCmd() *cobra.Command {
 		Short: "按时间窗口切片导出",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			start, end, err := parseWindow()
+			req, err := buildExportReq(args[0], true, false)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "错误:", err)
 				os.Exit(exitUsage)
 			}
-			req := application.ExportRequest{
-				Source:     args[0],
-				Output:     output,
-				EnableTime: true,
-				StartTime:  start,
-				EndTime:    end,
-				TimeFormat: timeFmt,
-			}
-			sum, err := application.Export(req)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "错误:", err)
-				os.Exit(mapExit(err, true))
-			}
-			fmt.Println(sum.Format())
-			if output != "" {
-				fmt.Println("输出文件:", output)
-			}
+			runExport(req)
 			return nil
 		},
 	}
 	bindTimeFlags(c)
-	c.Flags().StringVarP(&output, "output", "o", "", "输出结果文件路径（可选）")
+	bindOutFlag(c)
 	return c
 }
 
@@ -127,30 +206,17 @@ func grepCmd() *cobra.Command {
 				fmt.Fprintln(os.Stderr, "错误: 必须指定至少一个关键词或 --pattern")
 				os.Exit(exitUsage)
 			}
-			req := application.ExportRequest{
-				Source:       args[0],
-				Output:       output,
-				EnableSearch: true,
-				Keywords:     keywords,
-				And:          andMatch,
-				IgnoreCase:   ignoreCase,
-				WholeWord:    wholeWord,
-				Pattern:      pattern,
-			}
-			sum, err := application.Export(req)
+			req, err := buildExportReq(args[0], false, true)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "错误:", err)
-				os.Exit(mapExit(err, true))
+				os.Exit(exitUsage)
 			}
-			fmt.Println(sum.Format())
-			if output != "" {
-				fmt.Println("输出文件:", output)
-			}
+			runExport(req)
 			return nil
 		},
 	}
 	bindSearchFlags(c)
-	c.Flags().StringVarP(&output, "output", "o", "", "输出结果文件路径（可选）")
+	bindOutFlag(c)
 	return c
 }
 
@@ -160,48 +226,24 @@ func exportCmd() *cobra.Command {
 		Short: "时间 ∧ 内容组合导出",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			hasTime := timeStart != "" || timeEnd != ""
+			hasTime := timeStart != "" || timeEnd != "" || sinceRel != ""
 			hasSearch := len(keywords) > 0 || pattern != ""
 			if !hasTime && !hasSearch {
 				fmt.Fprintln(os.Stderr, "错误: export 至少需要时间窗口或检索条件")
 				os.Exit(exitUsage)
 			}
-			req := application.ExportRequest{
-				Source:       args[0],
-				Output:       output,
-				EnableTime:   hasTime,
-				EnableSearch: hasSearch,
-				Keywords:     keywords,
-				And:          andMatch,
-				IgnoreCase:   ignoreCase,
-				WholeWord:    wholeWord,
-				Pattern:      pattern,
-				TimeFormat:   timeFmt,
-			}
-			if hasTime {
-				start, end, err := parseWindow()
-				if err != nil {
-					fmt.Fprintln(os.Stderr, "错误:", err)
-					os.Exit(exitUsage)
-				}
-				req.StartTime = start
-				req.EndTime = end
-			}
-			sum, err := application.Export(req)
+			req, err := buildExportReq(args[0], hasTime, hasSearch)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "错误:", err)
-				os.Exit(mapExit(err, true))
+				os.Exit(exitUsage)
 			}
-			fmt.Println(sum.Format())
-			if output != "" {
-				fmt.Println("输出文件:", output)
-			}
+			runExport(req)
 			return nil
 		},
 	}
 	bindTimeFlags(c)
 	bindSearchFlags(c)
-	c.Flags().StringVarP(&output, "output", "o", "", "输出结果文件路径")
+	bindOutFlag(c)
 	return c
 }
 
@@ -219,36 +261,92 @@ func bindSearchFlags(c *cobra.Command) {
 	c.Flags().StringVar(&pattern, "pattern", "", "RE2 正则模式（复杂模式兜底）")
 }
 
-func parseWindow() (time.Time, time.Time, error) {
-	if timeStart == "" || timeEnd == "" {
-		return time.Time{}, time.Time{}, fmt.Errorf("必须同时指定 --start 与 --end")
+func bindOutFlag(c *cobra.Command) {
+	c.Flags().StringVarP(&output, "output", "o", "", "输出结果文件路径（可选）")
+}
+
+// sinceRel 由 persistent flag --since 填充
+var sinceRel string
+
+func buildExportReq(src string, enableTime, enableSearch bool) (application.ExportRequest, error) {
+	req := application.ExportRequest{
+		Source:       src,
+		Output:       output,
+		EnableTime:   enableTime,
+		EnableSearch: enableSearch,
+		Keywords:     keywords,
+		And:          andMatch,
+		IgnoreCase:   ignoreCase,
+		WholeWord:    wholeWord,
+		Pattern:      pattern,
+		TimeFormat:   timeFmt,
+		ReadRate:     readRate,
+		EnableMask:   appConfig == nil || appConfig.EnableMask,
+		Logger:       appLogger,
 	}
+	if sinceRel != "" && enableTime {
+		req.Relative = sinceRel
+		if timeStart != "" || timeEnd != "" {
+			return req, fmt.Errorf("--since 与 --start/--end 不能同时使用")
+		}
+		return req, nil
+	}
+	if enableTime {
+		if timeStart == "" || timeEnd == "" {
+			return req, fmt.Errorf("必须同时指定 --start 与 --end，或使用 --since")
+		}
+		st, err := parseTime(timeStart)
+		if err != nil {
+			return req, err
+		}
+		en, err := parseTime(timeEnd)
+		if err != nil {
+			return req, err
+		}
+		req.StartTime = st
+		req.EndTime = en
+	}
+	return req, nil
+}
+
+func parseTime(s string) (time.Time, error) {
 	layouts := []string{
 		"2006-01-02 15:04:05",
 		"2006-01-02 15:04:05.000",
 		time.RFC3339,
 		"2006-01-02",
 	}
-	parse := func(s string) (time.Time, error) {
-		for _, l := range layouts {
-			if t, err := time.ParseInLocation(l, strings.TrimSpace(s), time.Local); err == nil {
-				return t, nil
-			}
+	for _, l := range layouts {
+		if t, err := time.ParseInLocation(l, strings.TrimSpace(s), time.Local); err == nil {
+			return t, nil
 		}
-		return time.Time{}, fmt.Errorf("无法解析时间 %q，请使用 2006-01-02 15:04:05", s)
 	}
-	st, err := parse(timeStart)
-	if err != nil {
-		return time.Time{}, time.Time{}, err
-	}
-	en, err := parse(timeEnd)
-	if err != nil {
-		return time.Time{}, time.Time{}, err
-	}
-	return st, en, nil
+	return time.Time{}, fmt.Errorf("无法解析时间 %q，请使用 2006-01-02 15:04:05", s)
 }
 
-func mapExit(err error, isExport bool) int {
+func runExport(req application.ExportRequest) {
+	sum, err := application.Export(req)
+	if err != nil {
+		logErr(err)
+		fmt.Fprintln(os.Stderr, "错误:", err)
+		os.Exit(mapExit(err))
+	}
+	if appLogger != nil {
+		appLogger.Infof("导出完成 源=%s 扫描=%d 命中=%d", req.Source, sum.Scanned, sum.Matched)
+	}
+	fmt.Println(application.FormatSummary(sum, jsonOut, appConfig == nil || appConfig.EnableMask))
+	if req.Output != "" {
+		fmt.Println("输出文件:", req.Output)
+	}
+}
+
+func logErr(err error) {
+	if appLogger != nil {
+		appLogger.Errorf("%s", err.Error())
+	}
+}
+
+func mapExit(err error) int {
 	if err == nil {
 		return exitOK
 	}
@@ -256,12 +354,13 @@ func mapExit(err error, isExport bool) int {
 	switch {
 	case strings.Contains(msg, "文件不存在"), strings.Contains(msg, "没有读取权限"):
 		return exitNotFound
-	case strings.Contains(msg, "未能识别时间格式"), strings.Contains(msg, "无法按格式"), strings.Contains(msg, "文件为空"):
+	case strings.Contains(msg, "未能识别时间格式"), strings.Contains(msg, "无法按格式"), strings.Contains(msg, "文件为空"), strings.Contains(msg, "配置"):
 		return exitProbeFailed
+	case strings.Contains(msg, "密钥"):
+		return exitRuntime
 	default:
-		if isExport {
-			return exitRuntime
-		}
-		return exitProbeFailed
+		return exitRuntime
 	}
 }
+
+var _ = mask.Apply

@@ -1,6 +1,7 @@
 package application_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,17 +9,15 @@ import (
 	"time"
 
 	"github.com/bliubiu/logseek/internal/application"
+	"github.com/bliubiu/logseek/internal/domain/stream"
 	"github.com/bliubiu/logseek/internal/infrastructure/resources"
 )
 
 func TestResourcesDefaultLimit(t *testing.T) {
 	application.ApplyResources()
 	lim := resources.CurrentMemoryLimit()
-	if lim <= 0 || lim > resources.DefaultMemoryLimitBytes+1 {
-		// SetMemoryLimit(-1) 返回当前值；首次应已设为 192MiB
-		if lim != resources.DefaultMemoryLimitBytes {
-			t.Fatalf("软内存上限 = %d, 期望 %d", lim, resources.DefaultMemoryLimitBytes)
-		}
+	if lim != resources.DefaultMemoryLimitBytes {
+		t.Fatalf("软内存上限 = %d, 期望 %d", lim, resources.DefaultMemoryLimitBytes)
 	}
 }
 
@@ -49,6 +48,7 @@ func TestExportTimeAndKeyword(t *testing.T) {
 		TimeFormat:   "2006-01-02 15:04:05.000",
 		Keywords:     []string{"ERROR"},
 		IgnoreCase:   true,
+		EnableMask:   true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -66,6 +66,31 @@ func TestExportTimeAndKeyword(t *testing.T) {
 	}
 }
 
+func TestExportRelative(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "app.log")
+	now := time.Now()
+	inside := now.Add(-10 * time.Minute).Format("2006-01-02 15:04:05")
+	outside := now.Add(-48 * time.Hour).Format("2006-01-02 15:04:05")
+	body := inside + " [ERROR] 近期\n" + outside + " [ERROR] 过旧\n"
+	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum, err := application.Export(application.ExportRequest{
+		Source:     src,
+		EnableTime: true,
+		Relative:   "30m",
+		Now:        now,
+		TimeFormat: "2006-01-02 15:04:05",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Matched != 1 {
+		t.Fatalf("相对窗口命中=%d 期望1", sum.Matched)
+	}
+}
+
 func TestInspectApplication(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "a.log")
 	_ = os.WriteFile(p, []byte("2026-01-01 08:00:00.123 ok\n"), 0o644)
@@ -75,5 +100,29 @@ func TestInspectApplication(t *testing.T) {
 	}
 	if !rep.TimeDetected {
 		t.Error("应检测时间")
+	}
+}
+
+func TestFormatSummaryJSON(t *testing.T) {
+	sum := stream.Summary{Scanned: 3, Matched: 1}
+	s := application.FormatSummary(sum, true, true)
+	var m map[string]any
+	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		t.Fatalf("非 JSON: %s", s)
+	}
+	if m["scanned"].(float64) != 3 {
+		t.Fatal("scanned 错误")
+	}
+	// 中文摘要
+	s2 := application.FormatSummary(sum, false, true)
+	if !strings.Contains(s2, "扫描行") {
+		t.Fatal("中文摘要缺失")
+	}
+}
+
+func TestExportMissingSource(t *testing.T) {
+	_, err := application.Export(application.ExportRequest{})
+	if err == nil || !strings.Contains(err.Error(), "源日志") {
+		t.Fatal("应报中文错误")
 	}
 }
