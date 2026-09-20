@@ -8,4 +8,9 @@
 /data/
 /coverage.out
 /.logseek/
-
+# 大体积原始日志样本（10GB 级）禁止入库；testdata 下的小样例必须入库
+# （CLI 端到端测试依赖 alert_dlscdb_sample.log 等，故不能整目录忽略）
+/testdata/*.gz
+/testdata/*.log.gz
+/testdata/alert_dlscdb1.log
+/testdata/large/

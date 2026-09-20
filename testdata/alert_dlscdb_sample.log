@@ -1,0 +1,94 @@
+Sat Mar 16 16:11:32 2019
+Adjusting the default value of parameter parallel_max_servers
+from 640 to 120 due to the value of parameter processes (150)
+Starting ORACLE instance (normal)
+************************ Large Pages Information *******************
+Per process system memlock (soft) limit = 31 GB
+ 
+Total Shared Global Region in Large Pages = 0 KB (0%)
+ 
+Large Pages used by this instance: 0 (0 KB)
+Large Pages unused system wide = 0 (0 KB)
+Large Pages configured system wide = 0 (0 KB)
+Large Page size = 2048 KB
+ 
+RECOMMENDATION:
+  Total System Global Area size is 9698 MB. For optimal performance,
+  prior to the next instance restart:
+  1. Increase the number of unused large pages by 
+ at least 4849 (page size 2048 KB, total size 9698 MB) system wide to
+  get 100% of the System Global Area allocated with large pages
+********************************************************************
+LICENSE_MAX_SESSION = 0
+LOGMINER: Begin mining logfile for session -2147264255 thread 1 sequence 134013, +DATA1/dlscdb/onlinelog/group_7.275.1003076199
+LOGMINER: Begin mining logfile for session -2147264255 thread 2 sequence 65216, +DATA1/dlscdb/onlinelog/group_13.285.1003076219
+LOGMINER: summary for session# = 2147703041
+LOGMINER: StartScn: 19434779600089 (0x11ad.032264d9)
+LOGMINER: EndScn: 19434779600232 (0x11ad.03226568)
+LOGMINER: HighConsumedScn: 0
+LOGMINER: session_flag: 0x0
+LOGMINER: Read buffers: 8
+LOGMINER: Memory LWM: limit 10M, LWM 8M, 80%
+LOGMINER: Memory Release Limit: 0M
+LOGMINER: Begin mining logfile for session -2147264255 thread 1 sequence 134013, +DATA1/dlscdb/onlinelog/group_7.275.1003076199
+LOGMINER: Begin mining logfile for session -2147264255 thread 2 sequence 65216, +DATA1/dlscdb/onlinelog/group_13.285.1003076219
+Sun Sep 20 09:15:00 2026
+Errors in file /oracle/app/oracle/diag/rdbms/dlscdb/dlscdb1/trace/dlscdb1_j001_79497.trc:
+ORA-12012: error on auto execute of job "GDJY"."��ͣ�ָ�"
+ORA-06550: line 1, column 750:
+PLS-00306: wrong number or types of arguments in call to 'P_SCGL_SUSPEND_RECOVERY'
+ORA-06550: line 1, column 750:
+PL/SQL: Statement ignored
+Sun Sep 20 09:15:03 2026
+LOGMINER: summary for session# = 2147703041
+LOGMINER: StartScn: 19434779600228 (0x11ad.03226564)
+LOGMINER: EndScn: 19434779600437 (0x11ad.03226635)
+LOGMINER: HighConsumedScn: 0
+LOGMINER: session_flag: 0x0
+LOGMINER: Read buffers: 8
+LOGMINER: Memory LWM: limit 10M, LWM 8M, 80%
+LOGMINER: Memory Release Limit: 0M
+LOGMINER: Begin mining logfile for session -2147264255 thread 1 sequence 134013, +DATA1/dlscdb/onlinelog/group_7.275.1003076199
+LOGMINER: Begin mining logfile for session -2147264255 thread 2 sequence 65216, +DATA1/dlscdb/onlinelog/group_13.285.1003076219
+LOGMINER: summary for session# = 2147703041
+LOGMINER: StartScn: 19434779600433 (0x11ad.03226631)
+LOGMINER: EndScn: 19434779600598 (0x11ad.032266d6)
+LOGMINER: HighConsumedScn: 0
+LOGMINER: session_flag: 0x0
+LOGMINER: Read buffers: 8
+LOGMINER: Memory LWM: limit 10M, LWM 8M, 80%
+LOGMINER: Memory Release Limit: 0M
+LOGMINER: Begin mining logfile for session -2147264255 thread 1 sequence 134013, +DATA1/dlscdb/onlinelog/group_7.275.1003076199
+LOGMINER: Begin mining logfile for session -2147264255 thread 2 sequence 65216, +DATA1/dlscdb/onlinelog/group_13.285.1003076219
+Sun Sep 20 09:15:14 2026
+LOGMINER: summary for session# = 2147703041
+LOGMINER: StartScn: 19434779600595 (0x11ad.032266d3)
+LOGMINER: EndScn: 19434779600971 (0x11ad.0322684b)
+LOGMINER: HighConsumedScn: 0
+LOGMINER: session_flag: 0x0
+LOGMINER: Read buffers: 8
+LOGMINER: Memory LWM: limit 10M, LWM 8M, 80%
+LOGMINER: Memory Release Limit: 0M
+LOGMINER: Begin mining logfile for session -2147264255 thread 1 sequence 134013, +DATA1/dlscdb/onlinelog/group_7.275.1003076199
+LOGMINER: Begin mining logfile for session -2147264255 thread 2 sequence 65216, +DATA1/dlscdb/onlinelog/group_13.285.1003076219
+LOGMINER: summary for session# = 2147703041
+LOGMINER: StartScn: 19434779600969 (0x11ad.03226849)
+LOGMINER: EndScn: 19434779601094 (0x11ad.032268c6)
+LOGMINER: HighConsumedScn: 0
+LOGMINER: session_flag: 0x0
+LOGMINER: Read buffers: 8
+LOGMINER: Memory LWM: limit 10M, LWM 8M, 80%
+LOGMINER: Memory Release Limit: 0M
+LOGMINER: Begin mining logfile for session -2147264255 thread 1 sequence 134013, +DATA1/dlscdb/onlinelog/group_7.275.1003076199
+LOGMINER: Begin mining logfile for session -2147264255 thread 2 sequence 65216, +DATA1/dlscdb/onlinelog/group_13.285.1003076219
+Sun Sep 20 09:15:26 2026
+LOGMINER: summary for session# = 2147703041
+LOGMINER: StartScn: 19434779601090 (0x11ad.032268c2)
+LOGMINER: EndScn: 19434779601172 (0x11ad.03226914)
+LOGMINER: HighConsumedScn: 0
+LOGMINER: session_flag: 0x0
+LOGMINER: Read buffers: 8
+LOGMINER: Memory LWM: limit 10M, LWM 8M, 80%
+LOGMINER: Memory Release Limit: 0M
+LOGMINER: Begin mining logfile for session -2147264255 thread 1 sequence 134013, +DATA1/dlscdb/onlinelog/group_7.275.1003076199
+LOGMINER: Begin mining logfile for session -2147264255 thread 2 sequence 65216, +DATA1/dlscdb/onlinelog/group_13.285.1003076219
