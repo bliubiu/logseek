@@ -2,6 +2,17 @@
 
 本项目遵循 CalVer：`YYYY.MM.DD.MICRO`，标题格式 `## [YYYY.MM.DD.MICRO] - SemVer`。
 
+## [2026.09.20.0] - 0.1.2
+
+### 🐛 Bug Fixes  问题修复
+
+- 【稀疏定位】修复 timeslice 调用不存在的 `timefmt.ParseLineValue` 导致全项目不可编译（改用 `ParseWith`），并清理未使用变量与冗余形参 `layoutStr`
+- 【稀疏定位】回退语义改为 `Span.Reason` 承载说明、`error` 返回 nil，避免调用方因判错而丢失 FullScan 指引
+
+### 📚 Docs 文档更新
+
+- 新增 `docs/04-项目质量审查报告.md`，记录 P0 修复前后的构建/静态检查/测试实测数据
+
 ## [2026.08.04.1] - 0.1.1
 
 ### ✨ New Features 新增功能
