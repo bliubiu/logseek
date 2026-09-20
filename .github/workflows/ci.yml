@@ -41,8 +41,13 @@ jobs:
         run: go test ./... -count=1
 
       - name: 竞态检测
-        # 注意：Windows 本地环境 CGO_ENABLED=0 无法验证，本步骤未在提交前跑通，
-        # 故暂设为非阻塞。首次在 runner 上跑通后请移除 continue-on-error。
+        # -race 并不需要我们自己编译 ThreadSanitizer（Go 已随发行版提供预编译的
+        # race_linux.syso），但它会强制链接 runtime/cgo，使 Go 改用 pthread_create
+        # 创建线程——TSan 正是靠拦截 pthread_* 感知线程的，否则无法建立 happens-before，
+        # 绝大多数跨线程竞争都会被漏掉。而 cgo 依赖宿主 C 工具链，故本步骤需要 gcc。
+        # Ubuntu runner 自带 build-essential（含 gcc），因此在 CI 上可以跑通；
+        # 但本步骤提交前未在具备 gcc 的环境实际验证过，暂设非阻塞。
+        # 首次在 runner 上跑绿后，请移除 continue-on-error 使其转为阻塞门禁。
         continue-on-error: true
         run: go test ./... -count=1 -race
 
