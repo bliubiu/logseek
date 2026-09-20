@@ -3,9 +3,9 @@ package application
 
 import (
 	"encoding/json"
-	"fmt"
 	"time"
 
+	"github.com/bliubiu/logseek/internal/domain/errkind"
 	"github.com/bliubiu/logseek/internal/domain/probe"
 	"github.com/bliubiu/logseek/internal/domain/search"
 	"github.com/bliubiu/logseek/internal/domain/stream"
@@ -61,7 +61,7 @@ type ExportRequest struct {
 // Export 执行导出并返回摘要。
 func Export(req ExportRequest) (stream.Summary, error) {
 	if req.Source == "" {
-		return stream.Summary{}, fmt.Errorf("必须指定源日志路径")
+		return stream.Summary{}, errkind.New(errkind.KindUsage, "必须指定源日志路径")
 	}
 	var filters []stream.LineFilter
 	var badCounter *int64
@@ -157,7 +157,7 @@ func resolveLayout(req ExportRequest) (timefmt.Layout, error) {
 		return timefmt.Layout{}, err
 	}
 	if !rep.TimeDetected {
-		return timefmt.Layout{}, fmt.Errorf("%s", rep.Hint)
+		return timefmt.Layout{}, errkind.New(errkind.KindProbeFailed, "%s", rep.Hint)
 	}
 	return timefmt.Layout{Layout: rep.TimeLayout}, nil
 }

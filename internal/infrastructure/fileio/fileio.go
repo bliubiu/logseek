@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/bliubiu/logseek/internal/domain/errkind"
 	"github.com/bliubiu/logseek/internal/domain/stream"
 )
 
@@ -37,12 +38,12 @@ func OpenReadOnly(path string) (*ReadOnlyFile, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("文件不存在：%s", path)
+			return nil, errkind.Wrap(errkind.KindNotFound, fmt.Errorf("文件不存在：%s", path))
 		}
 		if os.IsPermission(err) {
-			return nil, fmt.Errorf("没有读取权限：%s", path)
+			return nil, errkind.Wrap(errkind.KindNotFound, fmt.Errorf("没有读取权限：%s", path))
 		}
-		return nil, fmt.Errorf("无法打开文件：%w", err)
+		return nil, errkind.Wrap(errkind.KindNotFound, fmt.Errorf("无法打开文件：%w", err))
 	}
 	return &ReadOnlyFile{f: f}, nil
 }

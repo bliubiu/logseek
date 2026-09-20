@@ -84,3 +84,36 @@ func TestMissingFile(t *testing.T) {
 		t.Fatalf("期望中文不存在错误, got %v", err)
 	}
 }
+
+// 回归：Oracle alert 日志（例如 testdata/alert_dlscdb1.log）预检必须
+// 识别带年份完整布局，首末时间年份不得丢失为 0000。
+func TestDetectOracleAlertFormat(t *testing.T) {
+	p := writeTemp(t, strings.Join([]string{
+		"Sat Mar 16 16:11:32 2019",
+		"Starting ORACLE instance (normal)",
+		"LOGMINER: Begin mining logfile for session -2147264255 thread 1",
+		"Sun Sep 20 09:15:00 2026",
+	}, "\n")+"\n")
+	rf, err := fileio.OpenReadOnly(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rf.Close()
+
+	rep, err := probe.Detect(rf)
+	if err != nil {
+		t.Fatalf("预检失败: %v", err)
+	}
+	if !rep.TimeDetected || !rep.Sliceable {
+		t.Fatalf("应识别到时间格式: %+v", rep)
+	}
+	if rep.TimeLayout != "Mon Jan 02 15:04:05 2006" {
+		t.Fatalf("时间布局 = %q", rep.TimeLayout)
+	}
+	if !strings.HasPrefix(rep.FirstTime, "2019") {
+		t.Errorf("首条时间年份丢失: %q", rep.FirstTime)
+	}
+	if !strings.HasPrefix(rep.LastTime, "2026") {
+		t.Errorf("末条时间年份丢失: %q", rep.LastTime)
+	}
+}

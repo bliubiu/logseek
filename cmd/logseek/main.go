@@ -12,10 +12,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/bliubiu/logseek/internal/application"
+	"github.com/bliubiu/logseek/internal/domain/errkind"
 	"github.com/bliubiu/logseek/internal/infrastructure/config"
 	"github.com/bliubiu/logseek/internal/infrastructure/crypto"
 	"github.com/bliubiu/logseek/internal/infrastructure/logging"
-	"github.com/bliubiu/logseek/internal/infrastructure/mask"
 )
 
 // 退出码定义（可被脚本消费）。
@@ -44,12 +44,12 @@ var (
 	pattern    string
 	output     string
 	// 全局
-	configPath string
-	jsonOut    bool
-	readRate   int64
-	logLevel   string
-	logDir     string
-	enableMask bool
+	configPath  string
+	jsonOut     bool
+	readRate    int64
+	logLevel    string
+	logDir      string
+	enableMask  bool
 	keyFilePath string
 	// 运行时
 	appLogger *logging.Logger
@@ -89,17 +89,8 @@ func main() {
 	root.AddCommand(inspectCmd(), sliceCmd(), grepCmd(), exportCmd())
 
 	if err := root.Execute(); err != nil {
-		code := exitUsage
-		msg := err.Error()
-		switch {
-		case strings.Contains(msg, "文件不存在"):
-			code = exitNotFound
-		case strings.Contains(msg, "密钥"):
-			code = exitRuntime
-		case strings.Contains(msg, "配置"), strings.Contains(msg, "未能识别"), strings.Contains(msg, "无法按格式"):
-			code = exitProbeFailed
-		}
-		os.Exit(code)
+		fmt.Fprintln(os.Stderr, "错误:", err)
+		exitNow(mapExit(err))
 	}
 }
 
@@ -113,13 +104,13 @@ func initRuntime() error {
 	if configPath != "" || keyFilePath != "" || dirExists(".logseek") {
 		ks, err = crypto.NewKeyStore(keyPath)
 		if err != nil {
-			return fmt.Errorf("密钥初始化失败（禁止降级）：%w", err)
+			return errkind.Wrap(errkind.KindRuntime, fmt.Errorf("密钥初始化失败（禁止降级）：%w", err))
 		}
 	}
 
 	appConfig, err = config.Load(configPath, ks)
 	if err != nil {
-		return err
+		return errkind.Wrap(errkind.KindRuntime, err)
 	}
 	if logLevel != "" {
 		appConfig.LogLevel = logLevel
@@ -160,7 +151,7 @@ func inspectCmd() *cobra.Command {
 			if err != nil {
 				logErr(err)
 				fmt.Fprintln(os.Stderr, "错误:", err)
-				os.Exit(mapExit(err))
+				exitNow(mapExit(err))
 			}
 			if appLogger != nil {
 				appLogger.Infof("预检完成 文件=%s 编码=%s 可切片=%v", args[0], rep.Encoding, rep.Sliceable)
@@ -185,7 +176,7 @@ func sliceCmd() *cobra.Command {
 			req, err := buildExportReq(args[0], true, false)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "错误:", err)
-				os.Exit(exitUsage)
+				exitNow(mapExit(err))
 			}
 			runExport(req)
 			return nil
@@ -203,13 +194,14 @@ func grepCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(keywords) == 0 && pattern == "" {
-				fmt.Fprintln(os.Stderr, "错误: 必须指定至少一个关键词或 --pattern")
-				os.Exit(exitUsage)
+				err := errkind.New(errkind.KindUsage, "必须指定至少一个关键词或 --pattern")
+				fmt.Fprintln(os.Stderr, "错误:", err)
+				exitNow(mapExit(err))
 			}
 			req, err := buildExportReq(args[0], false, true)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "错误:", err)
-				os.Exit(exitUsage)
+				exitNow(mapExit(err))
 			}
 			runExport(req)
 			return nil
@@ -229,13 +221,14 @@ func exportCmd() *cobra.Command {
 			hasTime := timeStart != "" || timeEnd != "" || sinceRel != ""
 			hasSearch := len(keywords) > 0 || pattern != ""
 			if !hasTime && !hasSearch {
-				fmt.Fprintln(os.Stderr, "错误: export 至少需要时间窗口或检索条件")
-				os.Exit(exitUsage)
+				err := errkind.New(errkind.KindUsage, "export 至少需要时间窗口或检索条件")
+				fmt.Fprintln(os.Stderr, "错误:", err)
+				exitNow(mapExit(err))
 			}
 			req, err := buildExportReq(args[0], hasTime, hasSearch)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "错误:", err)
-				os.Exit(exitUsage)
+				exitNow(mapExit(err))
 			}
 			runExport(req)
 			return nil
@@ -287,13 +280,13 @@ func buildExportReq(src string, enableTime, enableSearch bool) (application.Expo
 	if sinceRel != "" && enableTime {
 		req.Relative = sinceRel
 		if timeStart != "" || timeEnd != "" {
-			return req, fmt.Errorf("--since 与 --start/--end 不能同时使用")
+			return req, errkind.New(errkind.KindUsage, "--since 与 --start/--end 不能同时使用")
 		}
 		return req, nil
 	}
 	if enableTime {
 		if timeStart == "" || timeEnd == "" {
-			return req, fmt.Errorf("必须同时指定 --start 与 --end，或使用 --since")
+			return req, errkind.New(errkind.KindUsage, "必须同时指定 --start 与 --end，或使用 --since")
 		}
 		st, err := parseTime(timeStart)
 		if err != nil {
@@ -321,7 +314,7 @@ func parseTime(s string) (time.Time, error) {
 			return t, nil
 		}
 	}
-	return time.Time{}, fmt.Errorf("无法解析时间 %q，请使用 2006-01-02 15:04:05", s)
+	return time.Time{}, errkind.New(errkind.KindUsage, "无法解析时间 %q，请使用 2006-01-02 15:04:05", s)
 }
 
 func runExport(req application.ExportRequest) {
@@ -329,7 +322,7 @@ func runExport(req application.ExportRequest) {
 	if err != nil {
 		logErr(err)
 		fmt.Fprintln(os.Stderr, "错误:", err)
-		os.Exit(mapExit(err))
+		exitNow(mapExit(err))
 	}
 	if appLogger != nil {
 		appLogger.Infof("导出完成 源=%s 扫描=%d 命中=%d", req.Source, sum.Scanned, sum.Matched)
@@ -346,21 +339,39 @@ func logErr(err error) {
 	}
 }
 
+// exitNow 统一退出入口：先冲刷并关闭日志句柄再退出。
+//
+// 直接调用 os.Exit 会跳过 PersistentPostRun，导致日志缓冲区丢失、句柄不释放，
+// 因此所有退出路径都必须走这里。
+func exitNow(code int) {
+	if appLogger != nil {
+		appLogger.Close()
+		appLogger = nil
+	}
+	os.Exit(code)
+}
+
+// mapExit 按错误类别映射退出码。
+//
+// 不依赖错误文本：早期实现靠 strings.Contains 匹配中文文案，
+// 一旦文案调整或包装层级变化就会误判，现改由 domain/errkind 承载类别。
 func mapExit(err error) int {
 	if err == nil {
 		return exitOK
 	}
-	msg := err.Error()
-	switch {
-	case strings.Contains(msg, "文件不存在"), strings.Contains(msg, "没有读取权限"):
+	switch errkind.KindOf(err) {
+	case errkind.KindUsage:
+		return exitUsage
+	case errkind.KindNotFound:
 		return exitNotFound
-	case strings.Contains(msg, "未能识别时间格式"), strings.Contains(msg, "无法按格式"), strings.Contains(msg, "文件为空"), strings.Contains(msg, "配置"):
+	case errkind.KindProbeFailed:
 		return exitProbeFailed
-	case strings.Contains(msg, "密钥"):
+	case errkind.KindInterrupt:
+		return exitInterrupt
+	case errkind.KindRuntime:
 		return exitRuntime
 	default:
+		// 未分类错误统一按运行错误，保持与历史行为一致
 		return exitRuntime
 	}
 }
-
-var _ = mask.Apply

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/bliubiu/logseek/internal/domain/errkind"
 	"github.com/bliubiu/logseek/internal/domain/timefmt"
 )
 
@@ -39,16 +40,16 @@ type Report struct {
 func Detect(r ReaderAt) (Report, error) {
 	size, err := r.Size()
 	if err != nil {
-		return Report{}, fmt.Errorf("无法获取文件大小：%w", err)
+		return Report{}, errkind.Wrap(errkind.KindNotFound, fmt.Errorf("无法获取文件大小：%w", err))
 	}
 	rep := Report{SizeBytes: size}
 	if size == 0 {
-		return Report{}, fmt.Errorf("文件为空，无法预检")
+		return Report{}, errkind.Wrap(errkind.KindProbeFailed, fmt.Errorf("文件为空，无法预检"))
 	}
 
 	head, err := readWindow(r, 0, sampleWindow, size)
 	if err != nil {
-		return Report{}, fmt.Errorf("读取文件头部失败：%w", err)
+		return Report{}, errkind.Wrap(errkind.KindNotFound, fmt.Errorf("读取文件头部失败：%w", err))
 	}
 	tailOff := int64(0)
 	if size > sampleWindow {
@@ -56,7 +57,7 @@ func Detect(r ReaderAt) (Report, error) {
 	}
 	tail, err := readWindow(r, tailOff, sampleWindow, size)
 	if err != nil {
-		return Report{}, fmt.Errorf("读取文件尾部失败：%w", err)
+		return Report{}, errkind.Wrap(errkind.KindNotFound, fmt.Errorf("读取文件尾部失败：%w", err))
 	}
 
 	rep.Encoding = detectEncoding(append([]byte{}, head...))
