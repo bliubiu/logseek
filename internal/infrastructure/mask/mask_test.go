@@ -34,19 +34,27 @@ func TestEmail(t *testing.T) {
 	}
 }
 
-func TestMaskWriter(t *testing.T) {
-	var buf strings.Builder
-	w := mask.MaskWriter{W: writerFunc(func(p []byte) (int, error) {
-		return buf.Write(p)
-	})}
-	if _, err := w.Write([]byte("ip 10.0.0.1")); err != nil {
-		t.Fatal(err)
+func TestIPv4VersionNotMasked(t *testing.T) {
+	cases := map[string]string{
+		// 版本号形态：后随数值段
+		"Release 11.2.0.4.0 - 64bit": "Release 11.2.0.4.0 - 64bit",
+		// 版本语境词前置
+		"v11.2.0.4 build 3":     "v11.2.0.4 build 3",
+		"Version 10.2.0.4 done": "Version 10.2.0.4 done",
+		// 非法 IPv4：段值越界与前导零
+		"metric 999.1.1.1 x": "metric 999.1.1.1 x",
+		"seq 010.001.1.1 y":  "seq 010.001.1.1 y",
 	}
-	if !strings.Contains(buf.String(), "*.*.0.1") {
-		t.Fatalf("writer 未脱敏: %s", buf.String())
+	for in, want := range cases {
+		if got := mask.Apply(in); got != want {
+			t.Errorf("Apply(%q) = %q, 期望 %q", in, got, want)
+		}
 	}
 }
 
-type writerFunc func(p []byte) (int, error)
-
-func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+func TestIPv4StillMaskedForRealIPs(t *testing.T) {
+	got := mask.Apply("conn 10.0.0.1 -> 192.168.10.3 ok")
+	if !strings.Contains(got, "*.*.0.1") || !strings.Contains(got, "*.*.10.3") {
+		t.Fatalf("真实 IP 未脱敏（相邻多 IP 场景）: %s", got)
+	}
+}

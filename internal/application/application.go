@@ -117,7 +117,12 @@ func Export(req ExportRequest) (stream.Summary, error) {
 
 	var sk sink.SinkCloser
 	if req.Output != "" {
-		fs, err := sink.New(req.Output)
+		var so sink.Options
+		// 导出文件与控制台摘要同口径脱敏；关闭 --mask 时原样写出。
+		if req.EnableMask {
+			so.Mask = mask.Apply
+		}
+		fs, err := sink.NewWithOptions(req.Output, so)
 		if err != nil {
 			return stream.Summary{}, err
 		}
