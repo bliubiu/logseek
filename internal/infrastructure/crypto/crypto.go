@@ -141,3 +141,35 @@ func Decrypt(key []byte, s string) ([]byte, error) {
 func IsEncrypted(s string) bool {
 	return strings.HasPrefix(s, EncPrefix) && strings.HasSuffix(s, EncSuffix)
 }
+
+// passwordAlphabet 强口令字符表：大小写字母 + 数字 + 少量安全特殊字符，
+// 去掉引号与反斜杠，避免写进 JSON/配置文件时需要转义。
+const passwordAlphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*-_=+"
+
+// RandomPassword 生成 n 字符强口令（密码学随机）。
+//
+// 用于安全设计 2.5「空口令自动生成强口令」，禁止使用 math/rand，
+// 且刻意排除易混淆字符（l/I/1、O/0）。
+func RandomPassword(n int) (string, error) {
+	if n <= 0 {
+		n = 32
+	}
+	out := make([]byte, n)
+	max := uint64(256) / uint64(len(passwordAlphabet)) * uint64(len(passwordAlphabet))
+	for i := range out {
+		var b byte
+		// 拒绝采样避免取模偏斜
+		for {
+			var buf [1]byte
+			if _, err := rand.Read(buf[:]); err != nil {
+				return "", fmt.Errorf("生成随机口令失败：%w", err)
+			}
+			if uint64(buf[0]) < max {
+				b = buf[0]
+				break
+			}
+		}
+		out[i] = passwordAlphabet[int(b)%len(passwordAlphabet)]
+	}
+	return string(out), nil
+}

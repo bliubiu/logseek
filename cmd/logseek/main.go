@@ -45,6 +45,8 @@ var (
 	output     string
 	// 全局
 	configPath  string
+	saveConfig  string
+	ensurePwd   bool
 	jsonOut     bool
 	readRate    int64
 	logLevel    string
@@ -70,6 +72,11 @@ func main() {
 		return initRuntime()
 	}
 	root.PersistentPostRun = func(cmd *cobra.Command, args []string) {
+		// 命令成功后再落盘，失败路径不写配置（避免覆盖原文件）
+		if err := maybeSaveConfig(); err != nil {
+			fmt.Fprintln(os.Stderr, "错误:", err)
+			return
+		}
 		if appLogger != nil {
 			appLogger.Close()
 		}
@@ -78,6 +85,8 @@ func main() {
 	pf := root.PersistentFlags()
 	pf.IntVar(&memLimitMiB, "mem-limit-mib", 192, "Go 软内存上限（MiB），不得为 0 关闭")
 	pf.StringVar(&configPath, "config", "", "配置文件路径（JSON）")
+	pf.StringVar(&saveConfig, "save-config", "", "把当前生效配置落盘到该路径（口令以 ENC 加密保存）")
+	pf.BoolVar(&ensurePwd, "ensure-password", false, "配合 --save-config：口令为空时自动生成强口令")
 	pf.StringVar(&keyFilePath, "key-file", "", "密钥文件路径（默认 .logseek/key）")
 	pf.BoolVar(&jsonOut, "json", false, "以 JSON 输出摘要/报告")
 	pf.Int64Var(&readRate, "read-rate", 0, "读限速（字节/秒），0 不限；生产建议 67108864（64MiB/s）")
@@ -133,12 +142,75 @@ func initRuntime() error {
 		return err
 	}
 	appLogger = lg
+	if appConfig != nil {
+		if logLevel != "" {
+			appConfig.LogLevel = logLevel
+		}
+		if logDir != "" {
+			appConfig.LogDir = logDir
+		}
+		warnConfigIssues(appConfig)
+	}
 	return nil
 }
 
 func dirExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && st.IsDir()
+}
+
+// maybeSaveConfig 按 --save-config 落盘当前生效配置。
+//
+// 口令统一以 ENC 密文写入；--ensure-password 时为空口令生成强口令。
+// 无密钥句柄时拒绝保存，防止明文落盘。
+func maybeSaveConfig() error {
+	if saveConfig == "" {
+		return nil
+	}
+	ks, err := ensureKeyStore()
+	if err != nil {
+		return err
+	}
+	if appConfig == nil {
+		appConfig = config.Default()
+	}
+	if err := config.SaveWithOptions(saveConfig, appConfig, ks, config.SaveOptions{
+		EnsurePassword: ensurePwd,
+	}); err != nil {
+		return errkind.Wrap(errkind.KindRuntime, err)
+	}
+	fmt.Fprintln(os.Stderr, "配置已保存:", saveConfig)
+	if ensurePwd && appConfig.Password != "" {
+		fmt.Fprintln(os.Stderr, "已生成强口令，请从该配置文件查看并妥善保管")
+	}
+	return nil
+}
+
+// ensureKeyStore 复用当前密钥路径创建/加载密钥句柄。
+func ensureKeyStore() (*crypto.KeyStore, error) {
+	p := keyFilePath
+	if p == "" {
+		if appConfig != nil && appConfig.KeyFile != "" {
+			p = appConfig.KeyFile
+		} else {
+			p = filepath.Join(".logseek", "key")
+		}
+	}
+	ks, err := crypto.NewKeyStore(p)
+	if err != nil {
+		return nil, errkind.Wrap(errkind.KindRuntime, fmt.Errorf("密钥初始化失败（禁止降级）：%w", err))
+	}
+	return ks, nil
+}
+
+// warnConfigIssues 把加载期的安全告警回显给用户。
+func warnConfigIssues(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	for _, w := range cfg.Warnings {
+		fmt.Fprintln(os.Stderr, "安全提示:", w)
+	}
 }
 
 func inspectCmd() *cobra.Command {

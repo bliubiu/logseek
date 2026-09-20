@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -252,5 +253,40 @@ func TestCLIAlertE2E(t *testing.T) {
 	// 7) 安全铁律：全程源文件只读，校验和不得变化
 	if got := sha256file(t, src); got != sumBefore {
 		t.Errorf("源文件被修改！before=%s after=%s", sumBefore, got)
+	}
+}
+
+func TestCLISaveConfigEncryptsPassword(t *testing.T) {
+	bin := buildBinary(t)
+	src, dir := writeFixture(t)
+	keyPath := filepath.Join(dir, "key")
+	cfgPath := filepath.Join(dir, "cfg.json")
+	logDir := filepath.Join(dir, "logs")
+
+	cmd := exec.Command(bin, "inspect", src,
+		"--save-config", cfgPath, "--ensure-password",
+		"--key-file", keyPath, "--log-dir", logDir)
+	if code := exitCode(t, cmd); code != 0 {
+		t.Fatalf("退出码 = %d, 期望 0", code)
+	}
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 口令必须密文落盘
+	if !strings.Contains(string(raw), "ENC(") {
+		t.Fatalf("口令未加密落盘: %s", raw)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if pwd, _ := decoded["password"].(string); !strings.HasPrefix(pwd, "ENC(") {
+		t.Fatalf("password 字段非 ENC: %v", decoded["password"])
+	}
+	// 密钥文件不应留在配置文件里，回读应成功
+	cmd = exec.Command(bin, "inspect", src, "--config", cfgPath, "--key-file", keyPath, "--log-dir", logDir)
+	if code := exitCode(t, cmd); code != 0 {
+		t.Fatalf("带配置回读退出码 = %d, 期望 0", code)
 	}
 }

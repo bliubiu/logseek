@@ -87,3 +87,34 @@ func TestBadKeyLength(t *testing.T) {
 		t.Fatal("密钥长度非法应报错")
 	}
 }
+
+func TestRandomPasswordStrength(t *testing.T) {
+	p, err := crypto.RandomPassword(32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p) != 32 {
+		t.Fatalf("长度 = %d, 期望 32", len(p))
+	}
+	if strings.ContainsAny(p, "\"\\'`") {
+		t.Fatalf("口令含需转义字符: %s", p)
+	}
+	// 两次生成不得重复（随机性基本校验）
+	q, err := crypto.RandomPassword(32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p == q {
+		t.Fatal("两次生成口令相同，随机性异常")
+	}
+}
+
+func TestRandomPasswordDefaultLength(t *testing.T) {
+	p, err := crypto.RandomPassword(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p) != 32 {
+		t.Fatalf("默认长度 = %d, 期望 32", len(p))
+	}
+}
