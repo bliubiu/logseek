@@ -17,10 +17,10 @@ const (
 
 // Condition 检索条件。
 type Condition struct {
-	Keywords     []string
-	Combine      Combine
+	Keywords      []string
+	Combine       Combine
 	CaseSensitive bool
-	WholeWord    bool
+	WholeWord     bool
 	// Pattern 复杂模式；仅当关键词无法表达时使用，走 RE2。
 	Pattern string
 	// UseRE2 强制使用 RE2（测试/覆盖）。
@@ -145,13 +145,13 @@ func toLowerBytes(b []byte) []byte {
 
 // acMatcher Aho-Corasick 自动机（FSM 多模式）。
 type acMatcher struct {
-	next         [][256]int
-	patterns     [][]byte // 已 normalize
-	out          [][]int
+	next          [][256]int
+	patterns      [][]byte // 已 normalize
+	out           [][]int
 	caseSensitive bool
-	wholeWord    bool
-	or           bool
-	fail         []int
+	wholeWord     bool
+	or            bool
+	fail          []int
 }
 
 func buildAC(words []string, caseSensitive bool) (*acMatcher, error) {

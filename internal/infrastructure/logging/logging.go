@@ -47,14 +47,14 @@ func ParseLevel(s string) Level {
 
 // Logger 按 AGENTS 格式输出，支持文件按日轮转与控制台。
 type Logger struct {
-	mu       sync.Mutex
-	level    Level
-	dir      string
-	file     *os.File
-	fileDay  string
-	console  bool
-	module   string
-	retention int
+	mu         sync.Mutex
+	level      Level
+	dir        string
+	file       *os.File
+	fileDay    string
+	console    bool
+	module     string
+	retention  int
 	enableMask bool
 }
 
