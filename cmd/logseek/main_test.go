@@ -192,7 +192,7 @@ func TestCLIAlertE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("slice 失败: %v\n%s", err, out)
 	}
-	for _, want := range []string{`"matched":34`, `"scanned":94`, `"bad_lines":0`} {
+	for _, want := range []string{`"matched":34`, `"scanned":94`, `"bad_lines":0`, `"locate_mode"`} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("slice 输出缺少 %s:\n%s", want, out)
 		}

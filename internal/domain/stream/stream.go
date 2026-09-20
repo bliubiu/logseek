@@ -45,8 +45,11 @@ func (s Summary) Format() string {
 }
 
 // JSON 输出 JSON 字段友好结构。
+//
+// 与结构体 json tag 保持同步：手写 map 与 tag 双路径时，新增字段必须两边一起改，
+// 否则应用层能读到、CLI --json 却看不到（例如 locate_mode）。
 func (s Summary) JSON() map[string]any {
-	return map[string]any{
+	m := map[string]any{
 		"scanned":     s.Scanned,
 		"matched":     s.Matched,
 		"bad_lines":   s.BadLines,
@@ -54,6 +57,11 @@ func (s Summary) JSON() map[string]any {
 		"source":      s.Source,
 		"output":      s.Output,
 	}
+	// 与 json:"locate_mode,omitempty" 对齐：空值不输出。
+	if s.LocateMode != "" {
+		m["locate_mode"] = s.LocateMode
+	}
+	return m
 }
 
 // 域级缺省档位：应用层应以 infrastructure/resources 的生产红线为准显式注入，

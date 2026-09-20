@@ -227,4 +227,12 @@ func TestExportLocateModeReported(t *testing.T) {
 	if sum.Matched != 1 {
 		t.Fatalf("命中行数 = %d, 期望 1", sum.Matched)
 	}
+	// CLI --json 经 FormatSummary(sum.JSON()) 序列化，必须带上 locate_mode。
+	js := application.FormatSummary(sum, true, false)
+	if !strings.Contains(js, `"locate_mode"`) {
+		t.Fatalf("JSON 摘要缺少 locate_mode: %s", js)
+	}
+	if !strings.Contains(js, string(timeslice.FullScan)) {
+		t.Fatalf("JSON 摘要缺少定位模式取值 %q: %s", timeslice.FullScan, js)
+	}
 }

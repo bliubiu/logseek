@@ -2,6 +2,18 @@
 
 本项目遵循 CalVer：`YYYY.MM.DD.MICRO`，标题格式 `## [YYYY.MM.DD.MICRO] - SemVer`。
 
+## [2026.09.20.4] - 0.2.3
+
+### 🐛 Bug Fixes  问题修复
+
+- 【流式摘要】修复 `Summary.JSON()` 手写 map 未同步结构体 json tag，导致 `locate_mode`（span-seek / full-scan）在应用层已赋值、CLI `--json` 却看不到的问题；空值仍按 `omitempty` 语义不输出
+
+### 📚 Tests 测试补充
+
+- 【流式】新增 `TestSummaryJSONLocateMode`：校验空值不输出、非空值进入 JSON map
+- 【应用层】`TestExportLocateModeReported` 扩展断言 `FormatSummary(..., jsonMode=true)` 含 `locate_mode`
+- 【CLI e2e】`TestCLIAlertE2E` 的 slice `--json` 断言补充 `"locate_mode"`
+
 ## [2026.09.20.3] - 0.2.2
 
 修复 `docs/05` 大文件验证中暴露的两个 P0 缺陷（F3 多行日志内容丢失、F4 稀疏定位零接线）。

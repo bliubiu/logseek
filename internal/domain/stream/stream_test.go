@@ -314,3 +314,31 @@ func TestRunEmptySpanScansNothing(t *testing.T) {
 		t.Fatalf("扫描行数 = %d, 期望 0", sum.Scanned)
 	}
 }
+
+// TestSummaryJSONLocateMode 回归：CLI --json 走 Summary.JSON()，locate_mode 必须与结构体 tag 同步输出。
+func TestSummaryJSONLocateMode(t *testing.T) {
+	// 空值：与 omitempty 对齐，不应出现该键。
+	empty := stream.Summary{Scanned: 3, Matched: 1}
+	m := empty.JSON()
+	if _, ok := m["locate_mode"]; ok {
+		t.Fatalf("空 LocateMode 不应输出 locate_mode: %v", m)
+	}
+
+	// 已填充：必须出现在 map 中，供 FormatSummary/CLI --json 序列化。
+	filled := stream.Summary{
+		Scanned:    775975,
+		Matched:    436231,
+		LocateMode: "span-seek",
+	}
+	m = filled.JSON()
+	got, ok := m["locate_mode"].(string)
+	if !ok {
+		t.Fatalf("locate_mode 缺失或类型错误: %v", m)
+	}
+	if got != "span-seek" {
+		t.Fatalf("locate_mode = %q, 期望 %q", got, "span-seek")
+	}
+	if m["matched"].(int64) != 436231 || m["scanned"].(int64) != 775975 {
+		t.Fatalf("基础字段被破坏: %v", m)
+	}
+}
