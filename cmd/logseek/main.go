@@ -44,15 +44,16 @@ var (
 	pattern    string
 	output     string
 	// 全局
-	configPath  string
-	saveConfig  string
-	ensurePwd   bool
-	jsonOut     bool
-	readRate    int64
-	logLevel    string
-	logDir      string
-	enableMask  bool
-	keyFilePath string
+	configPath   string
+	saveConfig   string
+	ensurePwd    bool
+	jsonOut      bool
+	readRate     int64
+	logLevel     string
+	logDir       string
+	enableMask   bool
+	noStickyTime bool
+	keyFilePath  string
 	// 运行时
 	appLogger *logging.Logger
 	appConfig *config.Config
@@ -93,6 +94,7 @@ func main() {
 	pf.StringVar(&logLevel, "log-level", "", "日志级别 DEBUG/INFO/ERROR")
 	pf.StringVar(&logDir, "log-dir", "", "日志目录（默认 logs）")
 	pf.BoolVar(&enableMask, "mask", true, "控制台/摘要脱敏")
+	pf.BoolVar(&noStickyTime, "no-sticky-time", false, "关闭时间戳继承：续行不再沿用上一条时间戳（仅当每行都带时间戳时适用）")
 	pf.StringVar(&sinceRel, "since", "", "相对时间窗口，如 30m/2h/7d（与 --start/--end 互斥）")
 
 	root.AddCommand(inspectCmd(), sliceCmd(), grepCmd(), exportCmd())
@@ -348,6 +350,8 @@ func buildExportReq(src string, enableTime, enableSearch bool) (application.Expo
 		ReadRate:     readRate,
 		EnableMask:   appConfig == nil || appConfig.EnableMask,
 		Logger:       appLogger,
+
+		DisableStickyTime: noStickyTime,
 	}
 	if sinceRel != "" && enableTime {
 		req.Relative = sinceRel

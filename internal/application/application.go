@@ -54,6 +54,10 @@ type ExportRequest struct {
 	ReadRate   int64
 	EnableMask bool
 
+	// DisableStickyTime 关闭时间戳继承：续行不再沿用上一条时间戳。
+	// 默认开启继承以覆盖 Oracle alert 等多行日志；显式关闭后退化为逐行独立判定。
+	DisableStickyTime bool
+
 	// 日志
 	Logger *logging.Logger
 }
@@ -66,8 +70,13 @@ func Export(req ExportRequest) (stream.Summary, error) {
 	var filters []stream.LineFilter
 	var badCounter *int64
 
+	// 时间窗口、布局与稀疏定位结果；供扫描区间裁剪使用。
+	var start, end time.Time
+	var layout timefmt.Layout
+	var span timeslice.Span
+
 	if req.EnableTime {
-		start, end := req.StartTime, req.EndTime
+		start, end = req.StartTime, req.EndTime
 		if req.Relative != "" {
 			now := req.Now
 			if now.IsZero() {
@@ -79,11 +88,12 @@ func Export(req ExportRequest) (stream.Summary, error) {
 			}
 			start, end = s, e
 		}
-		layout, err := resolveLayout(req)
+		var err error
+		layout, err = resolveLayout(req)
 		if err != nil {
 			return stream.Summary{}, err
 		}
-		flt, err := timeslice.New(layout, start, end, timeslice.DefaultPolicy())
+		flt, err := timeslice.New(layout, start, end, timeslicePolicy(req))
 		if err != nil {
 			return stream.Summary{}, err
 		}
@@ -92,6 +102,14 @@ func Export(req ExportRequest) (stream.Summary, error) {
 		}))
 		bad := &flt.BadLines
 		badCounter = bad
+
+		// 稀疏定位：把全文件扫描裁剪到窗口所在字节区间。
+		// 定位不可靠时 Locate 返回 FullScan，调用方整文件扫描，语义不变。
+		sp, lerr := locateSpan(req.Source, layout, start, end)
+		if lerr != nil {
+			return stream.Summary{}, lerr
+		}
+		span = sp
 	}
 
 	if req.EnableSearch {
@@ -133,12 +151,21 @@ func Export(req ExportRequest) (stream.Summary, error) {
 
 	// 端口装配：domain 不感知基础设施实现，此处统一注入。
 	opt := stream.DefaultOptions()
-	opt.Opener = fileio.NewOpener()
+	op := fileio.NewOpener()
+	opt.Opener = op
+	opt.RandomOpener = op
 	if req.ReadRate > 0 {
 		opt.Limiter = ratelimit.New(req.ReadRate)
 	}
+	// 定位成功时按区间裁剪读取量；FullScan 不设区间，保持全文件语义。
+	if span.Mode == timeslice.SpanSeek {
+		opt.SpanStart, opt.SpanEnd = span.StartOff, span.EndOff
+	}
 
 	sum, err := stream.Run(req.Source, sk, filters, opt)
+	if req.EnableTime {
+		sum.LocateMode = string(span.Mode)
+	}
 	if badCounter != nil {
 		sum.BadLines = *badCounter
 	}
@@ -146,6 +173,31 @@ func Export(req ExportRequest) (stream.Summary, error) {
 		return sum, err
 	}
 	return sum, nil
+}
+
+// timeslicePolicy 过滤器策略。
+//
+// 默认启用时间戳继承：无时间戳的续行沿用上一条时间戳，
+// 保证多行日志（Oracle alert 等）的报错正文与其时间戳一起被切片。
+func timeslicePolicy(req ExportRequest) timeslice.Policy {
+	p := timeslice.DefaultPolicy()
+	if req.DisableStickyTime {
+		p.StickyTime = false
+	}
+	return p
+}
+
+// locateSpan 按时间窗口做稀疏采样二分定位，返回应扫描的字节区间。
+//
+// 输入文件保持只读；定位不可靠（时间戳过少、乱序、文件过小）时返回 Mode=FullScan，
+// 由调用方整文件扫描，结果语义与不计区间完全一致。
+func locateSpan(src string, layout timefmt.Layout, start, end time.Time) (timeslice.Span, error) {
+	rf, err := fileio.OpenReadOnly(src)
+	if err != nil {
+		return timeslice.Span{}, err
+	}
+	defer rf.Close()
+	return timeslice.Locate(rf, layout, timeslice.Window{Start: start, End: end}, timeslice.DefaultLocateOptions())
 }
 
 func resolveLayout(req ExportRequest) (timefmt.Layout, error) {

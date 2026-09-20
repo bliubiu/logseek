@@ -2,6 +2,28 @@
 
 本项目遵循 CalVer：`YYYY.MM.DD.MICRO`，标题格式 `## [YYYY.MM.DD.MICRO] - SemVer`。
 
+## [2026.09.20.3] - 0.2.2
+
+修复 `docs/05` 大文件验证中暴露的两个 P0 缺陷（F3 多行日志内容丢失、F4 稀疏定位零接线）。
+
+### ⚠️ Breaking Changes  破坏性变更
+
+- 【CLI】新增 `--no-sticky-time` 开关：默认开启时间戳继承，特殊场景可关闭
+
+### 🐛 Bug Fixes  问题修复
+
+- 【时间切片 F3】修复多行日志（Oracle alert 时间戳独占一行、续行无时间戳）内容丢失 96.42% 的问题：新增 `Policy.StickyTime` 与 `Filter.Inherited`，续行继承上一条已知时间戳参与窗口判断；`[2026-09-12, 2026-09-13)` 窗口命中由 15,641 行恢复至 436,251 行
+- 【时间切片 F4】修复 `timeslice.Locate` 稀疏定位零接线：导出在 `EnableTime` 时先求 `Span`，经 `RandomOpener` 仅扫描 `[StartOff, EndOff)` 字节区间；`0.22%` 时间窗口从全量扫描 156s 降为亚秒级；执行摘要新增 `LocateMode` 字段
+
+### 📈 Improvements 性能/体验优化
+
+- 【流式】`stream.Options` 新增 `SpanStart/SpanEnd/RandomOpener` 端口，domain 层保持不依赖 `os` 直接打开
+- 【端口】`stream` 新增 `RandomOpener`/`RandomReader` 端口，`fileio` 提供实现，由 application 装配注入
+
+### 📚 Docs 文档更新
+
+- 同步 `docs/05-大文件端到端与性能测试报告.md`：F3/F4 标为「已修复」，保留修复前基线数据
+
 ## [2026.09.20.2] - 0.2.1
 
 详见 `docs/05-大文件端到端与性能测试报告.md`（基于 testdata/alert_dlscdb1.log，10.84GB / 1.8 亿行实跑）。

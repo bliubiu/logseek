@@ -17,7 +17,10 @@ type Opener struct{}
 func NewOpener() Opener { return Opener{} }
 
 // 编译期断言：确保 Opener 始终满足域层端口。
-var _ stream.Opener = Opener{}
+var (
+	_ stream.Opener       = Opener{}
+	_ stream.RandomOpener = Opener{}
+)
 
 // Open 以只读方式打开并返回句柄，满足 stream.Opener 端口。
 func (Opener) Open(name string) (io.ReadCloser, error) {
@@ -26,6 +29,13 @@ func (Opener) Open(name string) (io.ReadCloser, error) {
 		return nil, err
 	}
 	return f, nil
+}
+
+// OpenRandom 以只读方式打开并返回可随机读句柄，满足 stream.RandomOpener 端口。
+//
+// 用于在稀疏定位给出的字节区间上裁剪抓取范围，避免为极小时间窗口全量扫描大文件。
+func (Opener) OpenRandom(name string) (stream.RandomReader, error) {
+	return OpenReadOnly(name)
 }
 
 // ReadOnlyFile 只读文件句柄。

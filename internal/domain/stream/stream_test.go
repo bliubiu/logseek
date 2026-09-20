@@ -231,3 +231,86 @@ func itoa(i int) string {
 	}
 	return string(b)
 }
+
+// bytesOpener 随机读端口的内存假实现，用于验证扫描区间裁剪。
+type bytesOpener struct{ data []byte }
+
+func (b *bytesOpener) OpenRandom(string) (stream.RandomReader, error) {
+	return &bytesHandle{data: b.data}, nil
+}
+
+type bytesHandle struct{ data []byte }
+
+func (b *bytesHandle) ReadAt(p []byte, off int64) (int, error) {
+	if off >= int64(len(b.data)) {
+		return 0, io.EOF
+	}
+	n := copy(p, b.data[off:])
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func (b *bytesHandle) Size() (int64, error) { return int64(len(b.data)), nil }
+func (b *bytesHandle) Close() error         { return nil }
+
+// TestRunScansOnlyGivenSpan 回归：给出有效区间时应只读区间内的行，避免全量扫描。
+func TestRunScansOnlyGivenSpan(t *testing.T) {
+	// 每行 3 字节：l0\n l1\n ...
+	var body []byte
+	for i := 0; i < 10; i++ {
+		body = append(body, []byte(fmt.Sprintf("l%d\n", i))...)
+	}
+	src := writeLog(t, []string{string(body[:len(body)-1])})
+	sk := sink.NewDiscard()
+	opt := optsWithSrc()
+	opt.RandomOpener = &bytesOpener{data: body}
+	// 行 i 起点 = 3*i；取 [6,18) 覆盖 l2..l5
+	opt.SpanStart, opt.SpanEnd = 6, 18
+
+	sum, err := stream.Run(src, sk, nil, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Scanned != 4 {
+		t.Fatalf("扫描行数 = %d, 期望 4（仅区间内的 l2..l5）", sum.Scanned)
+	}
+}
+
+// TestRunSpanRequiresRandomOpener 回归：未注入随机读端口时应忽略区间，保持全文件语义。
+func TestRunSpanRequiresRandomOpener(t *testing.T) {
+	src := writeLog(t, []string{"a", "b", "c", "d", "e"})
+	sk := sink.NewDiscard()
+	opt := optsWithSrc()
+	opt.SpanStart, opt.SpanEnd = 6, 18 // 无 RandomOpener 时应被忽略
+
+	sum, err := stream.Run(src, sk, nil, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Scanned != 5 {
+		t.Fatalf("扫描行数 = %d, 期望 5（区间被忽略）", sum.Scanned)
+	}
+}
+
+// TestRunEmptySpanScansNothing 窗口整体晚于文件时间范围时区间退化为 [size,size)，不应读任何行。
+func TestRunEmptySpanScansNothing(t *testing.T) {
+	var body []byte
+	for i := 0; i < 10; i++ {
+		body = append(body, []byte(fmt.Sprintf("l%d\n", i))...)
+	}
+	src := writeLog(t, []string{string(body[:len(body)-1])})
+	sk := sink.NewDiscard()
+	opt := optsWithSrc()
+	opt.RandomOpener = &bytesOpener{data: body}
+	opt.SpanStart, opt.SpanEnd = int64(len(body)), int64(len(body))
+
+	sum, err := stream.Run(src, sk, nil, opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Scanned != 0 {
+		t.Fatalf("扫描行数 = %d, 期望 0", sum.Scanned)
+	}
+}

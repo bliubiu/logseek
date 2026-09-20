@@ -10,6 +10,7 @@ import (
 
 	"github.com/bliubiu/logseek/internal/application"
 	"github.com/bliubiu/logseek/internal/domain/stream"
+	"github.com/bliubiu/logseek/internal/domain/timeslice"
 	"github.com/bliubiu/logseek/internal/infrastructure/resources"
 )
 
@@ -124,5 +125,106 @@ func TestExportMissingSource(t *testing.T) {
 	_, err := application.Export(application.ExportRequest{})
 	if err == nil || !strings.Contains(err.Error(), "源日志") {
 		t.Fatal("应报中文错误")
+	}
+}
+
+// TestExportStickyTimeKeepsMultilineBody 多行日志：时间戳独占一行，
+// 其后正文行必须随其时间戳一起落入窗口（回归 F3：此前丢弃 96% 内容）。
+func TestExportStickyTimeKeepsMultilineBody(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "alert.log")
+	body := strings.Join([]string{
+		"2026-01-01 09:00:00.000 earlier entry",
+		"  body of earlier entry should be excluded",
+		"2026-01-01 10:00:00.000 current entry",
+		"  Errors in file /u01/app/diag/trace/alert.log",
+		"  ORA-00600: internal error code",
+		"2026-01-01 11:00:00.000 later entry",
+		"  body of later entry should be excluded",
+	}, "\n") + "\n"
+	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(dir, "out.txt")
+	sum, err := application.Export(application.ExportRequest{
+		Source:     src,
+		Output:     out,
+		EnableTime: true,
+		StartTime:  time.Date(2026, 1, 1, 10, 0, 0, 0, time.Local),
+		EndTime:    time.Date(2026, 1, 1, 11, 0, 0, 0, time.Local),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 窗口内的条目 + 其两条正文 = 3 行
+	if sum.Matched != 3 {
+		t.Fatalf("命中行数 = %d, 期望 3", sum.Matched)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"current entry", "Errors in file", "ORA-00600"} {
+		if !strings.Contains(string(got), want) {
+			t.Fatalf("输出缺少 %q: %s", want, got)
+		}
+	}
+	for _, bad := range []string{"earlier entry", "later entry", "should be excluded"} {
+		if strings.Contains(string(got), bad) {
+			t.Fatalf("输出混入窗口外内容 %q: %s", bad, got)
+		}
+	}
+}
+
+// TestExportDisableStickyTime 显式关闭继承后退化为逐行判定，正文行丢弃。
+func TestExportDisableStickyTime(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "alert.log")
+	body := strings.Join([]string{
+		"2026-01-01 10:00:00.000 entry",
+		"  continuation line",
+	}, "\n") + "\n"
+	if err := os.WriteFile(src, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sum, err := application.Export(application.ExportRequest{
+		Source:            src,
+		EnableTime:        true,
+		StartTime:         time.Date(2026, 1, 1, 10, 0, 0, 0, time.Local),
+		EndTime:           time.Date(2026, 1, 1, 11, 0, 0, 0, time.Local),
+		DisableStickyTime: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Matched != 1 {
+		t.Fatalf("命中行数 = %d, 期望 1（仅时间戳行）", sum.Matched)
+	}
+}
+
+// TestExportLocateModeReported 时间窗口应回报定位模式诊断，便于判断是否为全文件扫描。
+func TestExportLocateModeReported(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "app.log")
+	// 小文件（< 16MiB）无法稀疏采样，应回报 full-scan 且结果与全扫一致。
+	if err := os.WriteFile(src, []byte("2026-01-01 10:00:00.000 hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum, err := application.Export(application.ExportRequest{
+		Source:     src,
+		EnableTime: true,
+		StartTime:  time.Date(2026, 1, 1, 10, 0, 0, 0, time.Local),
+		EndTime:    time.Date(2026, 1, 1, 11, 0, 0, 0, time.Local),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.LocateMode != string(timeslice.FullScan) {
+		t.Fatalf("定位模式 = %q, 期望 %q", sum.LocateMode, timeslice.FullScan)
+	}
+	if sum.Matched != 1 {
+		t.Fatalf("命中行数 = %d, 期望 1", sum.Matched)
 	}
 }

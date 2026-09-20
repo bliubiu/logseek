@@ -34,6 +34,8 @@ type Summary struct {
 	Duration time.Duration `json:"duration_ms"`
 	Source   string        `json:"source"`
 	Output   string        `json:"output,omitempty"`
+	// LocateMode 时间窗口定位模式诊断：span-seek（按定位区间扫描）或 full-scan（全文件扫描）。
+	LocateMode string `json:"locate_mode,omitempty"`
 }
 
 // Format 中文摘要。
@@ -73,7 +75,24 @@ type Options struct {
 	Limiter RateLimiter
 	// Ctx 用于限速等待的取消。
 	Ctx context.Context
+
+	// SpanStart、SpanEnd 扫描字节区间 [SpanStart, SpanEnd)。
+	//
+	// 由调用方按稀疏定位结果给出；区间外的行不可能落入目标时间窗口，
+	// 可安全跳过。SpanEnd <= SpanStart 时忽略，退化为全文件扫描。
+	// 需配合 RandomOpener 注入；未注入时同样退化为全文件扫描（语义不变）。
+	SpanStart int64
+	SpanEnd   int64
+	// RandomOpener 随机读端口，用于按上述区间裁剪读取范围。
+	RandomOpener RandomOpener
 }
+
+// hasSpan 是否给出了有效的扫描区间。
+//
+// 判定依据是 SpanEnd > 0 而非 SpanEnd > SpanStart：未设置时两者恒为 0，
+// 而 [size, size) 这样首尾相等但合法的区间意味着窗口落在文件时间范围之外，
+// 应当读取零字节直接结束，而不是退化成全文件扫描。
+func (o Options) hasSpan() bool { return o.SpanEnd > 0 && o.SpanEnd >= o.SpanStart }
 
 // DefaultOptions 默认资源档位；仅含块与行上限，端口由调用方注入。
 func DefaultOptions() Options {
@@ -98,14 +117,26 @@ func Run(srcPath string, sink Sink, filters []LineFilter, opt Options) (sum Summ
 	}
 	sum = Summary{Source: srcPath}
 
-	if opt.Opener == nil {
-		return sum, fmt.Errorf("缺少文件打开端口：调用方需注入 infrastructure/fileio 提供的实现")
+	var r io.Reader
+	if opt.RandomOpener != nil && opt.hasSpan() {
+		// 已定位到有效区间：在该区间上做受限顺序扫描，跳过区间外的海量无关行。
+		rf, rerr := opt.RandomOpener.OpenRandom(srcPath)
+		if rerr != nil {
+			return sum, rerr
+		}
+		defer rf.Close()
+		r = io.NewSectionReader(rf, opt.SpanStart, opt.SpanEnd-opt.SpanStart)
+	} else {
+		if opt.Opener == nil {
+			return sum, fmt.Errorf("缺少文件打开端口：调用方需注入 infrastructure/fileio 提供的实现")
+		}
+		f, oerr := opt.Opener.Open(srcPath)
+		if oerr != nil {
+			return sum, oerr
+		}
+		defer f.Close()
+		r = f
 	}
-	f, oerr := opt.Opener.Open(srcPath)
-	if oerr != nil {
-		return sum, oerr
-	}
-	defer f.Close()
 
 	// 写出端口必须在成功与出错两种路径上都关闭：
 	// 否则错误返回时缓冲内容丢失、文件句柄泄漏（结果文件残缺）。
@@ -118,9 +149,8 @@ func Run(srcPath string, sink Sink, filters []LineFilter, opt Options) (sum Summ
 	}
 
 	// 限速读包装
-	var r io.Reader = f
 	if opt.Limiter != nil && opt.Limiter.Enabled() {
-		r = &rateReader{r: f, lim: opt.Limiter, ctx: ctx}
+		r = &rateReader{r: r, lim: opt.Limiter, ctx: ctx}
 	}
 
 	// bufio 大缓冲顺序读，避免随机抖动。

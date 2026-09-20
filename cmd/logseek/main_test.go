@@ -183,7 +183,8 @@ func TestCLIAlertE2E(t *testing.T) {
 		}
 	}
 
-	// 2) slice：2019-03-16 窗口命中启动时间戳行；内容行为坏行计数
+	// 2) slice：2019-03-16 窗口命中首条目，其无时间戳的正文行沿用该时间戳一并计入。
+	// ground truth 经独立实现核对：34 + 60 = 94 行完全分区，无遗漏无重叠。
 	cmd = exec.Command(bin, "slice", src,
 		"--start", "2019-03-16 00:00:00", "--end", "2019-03-17 00:00:00",
 		"--json", "--log-dir", logDir)
@@ -191,13 +192,13 @@ func TestCLIAlertE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("slice 失败: %v\n%s", err, out)
 	}
-	for _, want := range []string{`"matched":1`, `"scanned":94`, `"bad_lines":89`} {
+	for _, want := range []string{`"matched":34`, `"scanned":94`, `"bad_lines":0`} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("slice 输出缺少 %s:\n%s", want, out)
 		}
 	}
 
-	// 3) slice 2026-09-20 窗口命中 4 条跨日时间戳行
+	// 3) slice 2026-09-20 窗口命中末条目及其正文行
 	cmd = exec.Command(bin, "slice", src,
 		"--start", "2026-09-20 00:00:00", "--end", "2026-09-21 00:00:00",
 		"-o", filepath.Join(dir, "sl.log"), "--json", "--log-dir", logDir)
@@ -205,8 +206,8 @@ func TestCLIAlertE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("slice 失败: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), `"matched":4`) {
-		t.Errorf("slice 2026 期望命中 4:\n%s", out)
+	if !strings.Contains(string(out), `"matched":60`) {
+		t.Errorf("slice 2026 期望命中 60:\n%s", out)
 	}
 
 	// 4) grep：检索 LOGMINER 命中 62 行
@@ -219,7 +220,8 @@ func TestCLIAlertE2E(t *testing.T) {
 		t.Errorf("grep 期望命中 62: %s", out)
 	}
 
-	// 5) export 组合：2026 窗口 ∧ LOGMINER -> 内容行无行首时间戳，交集为空
+	// 5) export 组合：2026 窗口 ∧ LOGMINER。
+	// 内容行本身无行首时间戳，靠时间戳继承归入所属条目后才可能参与交集。
 	cmd = exec.Command(bin, "export", src,
 		"--start", "2026-09-20 00:00:00", "--end", "2026-09-21 00:00:00",
 		"-k", "LOGMINER", "--json", "--log-dir", logDir)
@@ -227,8 +229,20 @@ func TestCLIAlertE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("export 失败: %v\n%s", err, out)
 	}
+	if !strings.Contains(string(out), `"matched":50`) {
+		t.Errorf("export 组合期望命中 50: %s", out)
+	}
+
+	// 5b) 关闭时间戳继承后应退化为逐行判定，正文行被丢弃 → 交集为空。
+	cmd = exec.Command(bin, "export", src,
+		"--start", "2026-09-20 00:00:00", "--end", "2026-09-21 00:00:00",
+		"-k", "LOGMINER", "--no-sticky-time", "--json", "--log-dir", logDir)
+	out, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("export --no-sticky-time 失败: %v\n%s", err, out)
+	}
 	if !strings.Contains(string(out), `"matched":0`) {
-		t.Errorf("export 组合期望交集为空: %s", out)
+		t.Errorf("关闭继承后期望交集为空: %s", out)
 	}
 
 	// 6) export 纯内容：无时间条件仍可检索（采样尾部含 ORA-12012 错误块）
