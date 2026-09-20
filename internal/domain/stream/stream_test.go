@@ -1,8 +1,11 @@
 package stream_test
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +15,43 @@ import (
 	"github.com/bliubiu/logseek/internal/domain/stream"
 	"github.com/bliubiu/logseek/internal/infrastructure/sink"
 )
+
+// fileOpener 测试用只读打开端口实现（不引入基础设施，保持域层测试纯净）。
+type fileOpener struct{}
+
+func (fileOpener) Open(name string) (io.ReadCloser, error) {
+	f, err := os.Open(name)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("文件不存在：%s", name)
+		}
+		return nil, fmt.Errorf("无法打开源文件：%w", err)
+	}
+	return f, nil
+}
+
+// slowLimiter 按每字节批次阻塞的限速端口实现，用于验证端口确实被接线。
+type slowLimiter struct {
+	calls  int64
+	waited time.Duration
+	every  time.Duration
+}
+
+func (s *slowLimiter) Wait(_ context.Context, n int) error {
+	s.calls++
+	time.Sleep(s.every)
+	s.waited += s.every
+	return nil
+}
+
+func (s *slowLimiter) Enabled() bool { return true }
+
+// optsWithSrc 组装带测试打开器的默认选项。
+func optsWithSrc() stream.Options {
+	opt := stream.DefaultOptions()
+	opt.Opener = fileOpener{}
+	return opt
+}
 
 func writeLog(t *testing.T, lines []string) string {
 	t.Helper()
@@ -50,7 +90,7 @@ func TestReadOnlyAndOrder(t *testing.T) {
 	matcher := stream.FilterFunc(func(line []byte) bool {
 		return strings.Contains(string(line), "line")
 	})
-	sum, err := stream.Run(src, sk, []stream.LineFilter{matcher}, stream.DefaultOptions())
+	sum, err := stream.Run(src, sk, []stream.LineFilter{matcher}, optsWithSrc())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +115,8 @@ func TestChunkBoundaryLines(t *testing.T) {
 	}
 	src := writeLog(t, lines)
 	sk := sink.NewDiscard()
-	opt := stream.Options{BlockSize: 64, MaxLine: 1 << 20}
+	opt := optsWithSrc()
+	opt.BlockSize = 64
 	sum, err := stream.Run(src, sk, nil, opt)
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +136,7 @@ func TestFilterAndComposition(t *testing.T) {
 	// 时间过滤用函数近似：只保留 10:00:00 与 10:00:02 的 ERROR —— 组合为与
 	f1 := stream.FilterFunc(func(b []byte) bool { return strings.Contains(string(b), "ERROR") })
 	f2 := stream.FilterFunc(func(b []byte) bool { return !strings.Contains(string(b), "INFO") })
-	sum, err := stream.Run(src, sk, []stream.LineFilter{f1, f2}, stream.DefaultOptions())
+	sum, err := stream.Run(src, sk, []stream.LineFilter{f1, f2}, optsWithSrc())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,33 +146,77 @@ func TestFilterAndComposition(t *testing.T) {
 }
 
 func TestMissingSource(t *testing.T) {
-	_, err := stream.Run(filepath.Join(t.TempDir(), "no.log"), sink.NewDiscard(), nil, stream.DefaultOptions())
+	_, err := stream.Run(filepath.Join(t.TempDir(), "no.log"), sink.NewDiscard(), nil, optsWithSrc())
 	if err == nil || !strings.Contains(err.Error(), "不存在") {
 		t.Fatalf("期望不存在错误: %v", err)
 	}
 }
 
 func TestReadRate(t *testing.T) {
-	// 小文件 + 极低限速，应仍完成但变慢
+	// 低速端口：验证 RateLimiter 端口确实被调用（不再由域层直接 new 基础设施）
 	var lines []string
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 8; i++ {
 		lines = append(lines, strings.Repeat("y", 400)+itoa(i))
 	}
 	src := writeLog(t, lines)
 	sk := sink.NewDiscard()
-	opt := stream.DefaultOptions()
-	opt.ReadRate = 50 << 10 // 50KB/s
+	// 每次底层读都会经过限速端口；读粒度由 Scanner 缓冲决定（绕过 BlockSize），
+	// 因此这里只断言端口被调用且阻塞确实累积，不断言调用次数。
+	metric := &slowLimiter{every: 60 * time.Millisecond}
+	opt := optsWithSrc()
+	opt.Limiter = metric
 	start := time.Now()
 	sum, err := stream.Run(src, sk, nil, opt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sum.Scanned != 200 {
+	if sum.Scanned != 8 {
 		t.Fatalf("scanned=%d", sum.Scanned)
 	}
-	// 200*~405 ≈ 80KB at 50KB/s → 约 1.6s；至少应有可感知延迟
-	if time.Since(start) < 200*time.Millisecond {
+	if metric.calls == 0 {
+		t.Fatal("限速端口未被调用")
+	}
+	if time.Since(start) < 50*time.Millisecond {
 		t.Fatalf("限速似乎未生效: %s", time.Since(start))
+	}
+}
+
+func TestMissingOpener(t *testing.T) {
+	// 未注入打开端口必须报错，而不是悄悄回退到 os.Open
+	_, err := stream.Run("x.log", sink.NewDiscard(), nil, stream.DefaultOptions())
+	if err == nil || !strings.Contains(err.Error(), "文件打开端口") {
+		t.Fatalf("期望缺少端口错误: %v", err)
+	}
+}
+
+// failSink 写第 3 行失败，用于验证错误路径同样会 Close。
+type failSink struct {
+	written int
+	closed  bool
+}
+
+func (f *failSink) WriteLine(_ []byte) error {
+	f.written++
+	if f.written >= 3 {
+		return fmt.Errorf("模拟写盘失败")
+	}
+	return nil
+}
+
+func (f *failSink) Close() error {
+	f.closed = true
+	return nil
+}
+
+func TestSinkClosedOnErrorPath(t *testing.T) {
+	// 回归：错误返回路径也必须关闭写出，否则缓冲丢失 + 句柄泄漏
+	src := writeLog(t, []string{"a", "b", "c", "d", "e"})
+	sk := &failSink{}
+	if _, err := stream.Run(src, sk, nil, optsWithSrc()); err == nil {
+		t.Fatal("期望写出失败")
+	}
+	if !sk.closed {
+		t.Fatal("错误路径未关闭 sink，存在句柄泄漏与缓冲丢失风险")
 	}
 }
 

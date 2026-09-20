@@ -14,6 +14,7 @@ import (
 	"github.com/bliubiu/logseek/internal/infrastructure/fileio"
 	"github.com/bliubiu/logseek/internal/infrastructure/logging"
 	"github.com/bliubiu/logseek/internal/infrastructure/mask"
+	"github.com/bliubiu/logseek/internal/infrastructure/ratelimit"
 	"github.com/bliubiu/logseek/internal/infrastructure/resources"
 	"github.com/bliubiu/logseek/internal/infrastructure/sink"
 )
@@ -37,8 +38,8 @@ type ExportRequest struct {
 	EnableTime bool
 	StartTime  time.Time
 	EndTime    time.Time
-	TimeFormat string // 显式格式；空则探测
-	Relative   string // 相对时间如 30m/7d/2h（与绝对互斥，优先）
+	TimeFormat string    // 显式格式；空则探测
+	Relative   string    // 相对时间如 30m/7d/2h（与绝对互斥，优先）
 	Now        time.Time // 测试注入
 
 	// 内容条件
@@ -115,7 +116,6 @@ func Export(req ExportRequest) (stream.Summary, error) {
 	}
 
 	var sk sink.SinkCloser
-	var fs *sink.FileSink
 	if req.Output != "" {
 		fs, err := sink.New(req.Output)
 		if err != nil {
@@ -123,12 +123,15 @@ func Export(req ExportRequest) (stream.Summary, error) {
 		}
 		sk = fs
 	} else {
-		fs = sink.NewDiscard()
-		sk = fs
+		sk = sink.NewDiscard()
 	}
 
+	// 端口装配：domain 不感知基础设施实现，此处统一注入。
 	opt := stream.DefaultOptions()
-	opt.ReadRate = req.ReadRate
+	opt.Opener = fileio.NewOpener()
+	if req.ReadRate > 0 {
+		opt.Limiter = ratelimit.New(req.ReadRate)
+	}
 
 	sum, err := stream.Run(req.Source, sk, filters, opt)
 	if badCounter != nil {

@@ -3,8 +3,29 @@ package fileio
 
 import (
 	"fmt"
+	"io"
 	"os"
+
+	"github.com/bliubiu/logseek/internal/domain/stream"
 )
+
+// Opener 实现 domain/stream 的只读打开端口。
+type Opener struct{}
+
+// NewOpener 创建读打开适配器。
+func NewOpener() Opener { return Opener{} }
+
+// 编译期断言：确保 Opener 始终满足域层端口。
+var _ stream.Opener = Opener{}
+
+// Open 以只读方式打开并返回句柄，满足 stream.Opener 端口。
+func (Opener) Open(name string) (io.ReadCloser, error) {
+	f, err := OpenReadOnly(name)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
 
 // ReadOnlyFile 只读文件句柄。
 type ReadOnlyFile struct {
@@ -25,6 +46,9 @@ func OpenReadOnly(path string) (*ReadOnlyFile, error) {
 	}
 	return &ReadOnlyFile{f: f}, nil
 }
+
+// Read 顺序读（流式扫描场景复用文件读游标）。
+func (r *ReadOnlyFile) Read(p []byte) (int, error) { return r.f.Read(p) }
 
 // ReadAt 实现 io.ReaderAt。
 func (r *ReadOnlyFile) ReadAt(p []byte, off int64) (int, error) {

@@ -4,9 +4,15 @@ package ratelimit
 import (
 	"context"
 	"time"
+
+	"github.com/bliubiu/logseek/internal/domain/stream"
 )
 
+// 编译期断言：确保 Limiter 始终满足域层限速端口。
+var _ stream.RateLimiter = (*Limiter)(nil)
+
 // Limiter 按字节速率限速；bytesPerSec<=0 表示不限速。
+// 注意：实现内部持有 elapsed 预算状态，非并发安全，约定单协程顺序读场景使用。
 type Limiter struct {
 	bytesPerSec int64
 	last        time.Time
