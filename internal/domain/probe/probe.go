@@ -3,9 +3,11 @@ package probe
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/bliubiu/logseek/internal/domain/errkind"
@@ -13,7 +15,15 @@ import (
 )
 
 // 默认采样窗口大小。
-const sampleWindow = 64 << 10
+const (
+	sampleWindow = 64 << 10
+	// sampleLines 头尾样例展示行数。
+	sampleLines = 5
+	// tailProbeMax 末尾时间戳回溯上限（额外向前探的窗口数）。
+	// Oracle alert 等日志末尾常为多行续写（无时间戳），需在窗口内逆向查找，
+	// 窗口内仍找不到时再向前扩展，避免「可切片」却查不到末条时间。
+	tailProbeMax = 8
+)
 
 // ReaderAt 提交与 os.File 兼容的随机读接口。
 type ReaderAt interface {
@@ -62,8 +72,10 @@ func Detect(r ReaderAt) (Report, error) {
 
 	rep.Encoding = detectEncoding(append([]byte{}, head...))
 	rep.LineBreakStyle = detectBreak(head)
-	rep.HeadSamples = headLines(head, 5)
-	rep.TailSamples = tailLines(tail, 5)
+	rep.HeadSamples = takeLines(allLines(head), sampleLines, false)
+	// 尾部窗口起点通常落在一行中间，需先丢弃首行残片，再取窗口末尾若干行，
+	// 否则「尾部样例」展示的其实只是窗口开头的内容。
+	rep.TailSamples = takeLines(allLines(dropPartialLine(tail, tailOff > 0)), sampleLines, true)
 
 	samples := append(append([]string{}, rep.HeadSamples...), rep.TailSamples...)
 	layout, derr := timefmt.Detect(samples)
@@ -76,31 +88,98 @@ func Detect(r ReaderAt) (Report, error) {
 	rep.TimeLayout = layout.Layout
 	rep.Sliceable = true
 
-	if t, ok := timefmt.ParseWith(layout.Layout, firstNonEmpty(rep.HeadSamples)); ok {
-		rep.FirstTime = t.Format("2006-01-02 15:04:05")
-	}
-	if t, ok := timefmt.ParseWith(layout.Layout, lastNonEmpty(rep.TailSamples)); ok {
-		rep.LastTime = t.Format("2006-01-02 15:04:05")
-	}
+	// 首尾时间在完整窗口内按行查找，而非只看样例行：
+	// 多行日志（如 Oracle alert）的时间戳独占一行，样例行本身常常无时间。
+	rep.FirstTime = fmtTime(firstParsable(head, layout.Layout))
+	rep.LastTime = fmtTime(lastParsable(r, size, tailOff, layout.Layout))
 	return rep, nil
 }
 
-func firstNonEmpty(ss []string) string {
-	for _, s := range ss {
-		if strings.TrimSpace(s) != "" {
-			return s
+// firstParsable 在缓冲区内自前向后找首个可解析时间戳。
+func firstParsable(b []byte, layout string) (time.Time, bool) {
+	for _, l := range allLines(b) {
+		if t, ok := timefmt.ParseWith(layout, l); ok {
+			return t, true
 		}
 	}
-	return ""
+	return time.Time{}, false
 }
 
-func lastNonEmpty(ss []string) string {
-	for i := len(ss) - 1; i >= 0; i-- {
-		if strings.TrimSpace(ss[i]) != "" {
-			return ss[i]
+// lastParsable 自文件尾向前找最后一个可解析时间戳。
+//
+// 先在尾部窗口内逆向扫描；若窗口全是续行（无时间戳），再向前扩展若干窗口，
+// 直到命中或达到 tailProbeMax 上限。
+func lastParsable(r ReaderAt, size, tailOff int64, layout string) (time.Time, bool) {
+	off := tailOff
+	for i := 0; i <= tailProbeMax; i++ {
+		b, err := readWindow(r, off, sampleWindow, size)
+		if err != nil || len(b) == 0 {
+			return time.Time{}, false
+		}
+		lines := allLines(dropPartialLine(b, i == 0 && off > 0))
+		for j := len(lines) - 1; j >= 0; j-- {
+			if t, ok := timefmt.ParseWith(layout, lines[j]); ok {
+				return t, true
+			}
+		}
+		if off == 0 {
+			return time.Time{}, false
+		}
+		off -= sampleWindow
+		if off < 0 {
+			off = 0
 		}
 	}
-	return ""
+	return time.Time{}, false
+}
+
+// fmtTime 格式化时间，零值返回空串。
+func fmtTime(t time.Time, ok bool) string {
+	if !ok {
+		return ""
+	}
+	return t.Format("2006-01-02 15:04:05")
+}
+
+// allLines 切出全部非空可见行（跳过纯空白行）。
+func allLines(b []byte) []string {
+	if len(b) == 0 {
+		return nil
+	}
+	s := bufio.NewScanner(strings.NewReader(string(b)))
+	s.Buffer(make([]byte, 0, 4096), 1<<20)
+	var out []string
+	for s.Scan() {
+		l := strings.TrimRight(s.Text(), "\r")
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+// takeLines 从头或尾取 n 行；backward 为真时取末尾 n 行。
+func takeLines(lines []string, n int, backward bool) []string {
+	if len(lines) <= n {
+		return lines
+	}
+	if backward {
+		return lines[len(lines)-n:]
+	}
+	return lines[:n]
+}
+
+// dropPartialLine 丢弃起始点半行残片；随机窗口起点常落在某行中间。
+// 仅当窗口确实不是从文件开头读起时才丢弃，否则会丢掉真实的最后一行。
+func dropPartialLine(b []byte, partial bool) []byte {
+	if !partial {
+		return b
+	}
+	if idx := bytes.IndexByte(b, '\n'); idx >= 0 && idx+1 < len(b) {
+		return b[idx+1:]
+	}
+	return b
 }
 
 func readWindow(r ReaderAt, off, n, size int64) ([]byte, error) {
@@ -166,28 +245,6 @@ func detectBreak(b []byte) string {
 		return "cr"
 	}
 	return "none"
-}
-
-func headLines(b []byte, n int) []string {
-	s := bufio.NewScanner(strings.NewReader(string(b)))
-	s.Buffer(make([]byte, 0, 4096), 1<<20)
-	var out []string
-	for s.Scan() && len(out) < n {
-		line := s.Text()
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		out = append(out, line)
-	}
-	return out
-}
-
-func tailLines(b []byte, n int) []string {
-	lines := headLines(b, n*3)
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	return lines
 }
 
 // Format 中文可读报告。
